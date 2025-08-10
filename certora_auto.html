@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certora Auto Analyzer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 25px 70px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .input-section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .url-input {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 16px;
+            border: 2px solid #dee2e6;
+            border-radius: 10px;
+            transition: border-color 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 14px 32px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .status-message {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .status-info {
+            background: #cfe2ff;
+            color: #084298;
+            border: 1px solid #b6d4fe;
+        }
+
+        .status-success {
+            background: #d1e7dd;
+            color: #0f5132;
+            border: 1px solid #badbcc;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #842029;
+            border: 1px solid #f5c2c7;
+        }
+
+        .result-section {
+            display: none;
+        }
+
+        .result-header {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .result-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #212529;
+            margin-bottom: 10px;
+        }
+
+        .rule-card {
+            background: white;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+
+        .rule-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .rule-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .rule-name {
+            font-weight: 600;
+            color: #212529;
+            font-size: 16px;
+        }
+
+        .rule-status {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-violated {
+            background: #dc3545;
+            color: white;
+        }
+
+        .status-timeout {
+            background: #ffc107;
+            color: #212529;
+        }
+
+        .json-preview {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin: 15px 0;
+        }
+
+        .json-preview pre {
+            margin: 0;
+            white-space: pre-wrap;
+        }
+
+        .markdown-output {
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .markdown-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .markdown-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #212529;
+        }
+
+        .markdown-content {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 600px;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .markdown-content pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .copy-btn {
+            padding: 8px 16px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: #218838;
+            transform: translateY(-1px);
+        }
+
+        .rule-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .rule-btn {
+            padding: 8px 16px;
+            border: 1px solid #dee2e6;
+            background: white;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .rule-btn:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .action-bar {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Certora Auto Analyzer</h1>
+            <p>自动分析并获取所有非verified规则的JSON内容</p>
+        </div>
+
+        <div class="content">
+            <div class="input-section">
+                <h3 style="margin-bottom: 20px; color: #212529;">输入 Certora URL</h3>
+                <input type="text" 
+                       class="url-input" 
+                       id="certora-url" 
+                       placeholder="https://prover.certora.com/output/..."
+                       value="">
+                
+                <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
+                    🔍 分析并获取所有JSON
+                </button>
+
+                <div id="status-message"></div>
+            </div>
+
+            <div id="result-section" class="result-section"></div>
+        </div>
+    </div>
+
+    <script>
+        let allRulesData = null;
+        let jsonContents = {};
+
+        async function analyzeUrl() {
+            const url = document.getElementById('certora-url').value.trim();
+            if (!url) {
+                showStatus('请输入URL', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('analyzeBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ 分析中...';
+            
+            // 清空之前的结果
+            const resultSection = document.getElementById('result-section');
+            resultSection.style.display = 'none';
+            allRulesData = null;
+            
+            // 创建进度显示区域
+            createProgressArea();
+            
+            try {
+                // 使用fetch发送POST请求到SSE端点
+                const response = await fetch('http://localhost:3002/analyze-and-fetch-stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`服务器错误: ${response.status}`);
+                }
+                
+                // 读取SSE流
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                
+                                switch(data.type) {
+                                    case 'info':
+                                        addProgressMessage(data.message, 'info');
+                                        break;
+                                    case 'success':
+                                        addProgressMessage(data.message, 'success');
+                                        break;
+                                    case 'error':
+                                        addProgressMessage(data.message, 'error');
+                                        showStatus(`错误: ${data.message}`, 'error');
+                                        break;
+                                    case 'complete':
+                                        addProgressMessage('✅ 分析完成！', 'success');
+                                        allRulesData = data.data;
+                                        
+                                        // 保存所有JSON内容
+                                        data.data.rules.forEach(rule => {
+                                            if (rule.content) {
+                                                jsonContents[rule.outputFile] = rule.content;
+                                            }
+                                        });
+                                        
+                                        displayResults(data.data);
+                                        showStatus(`✅ 成功获取 ${data.data.rules.length} 个规则的数据`, 'success');
+                                        break;
+                                }
+                            } catch (parseError) {
+                                console.log('解析SSE数据失败:', parseError);
+                            }
+                        }
+                    }
+                }
+                
+            } catch (error) {
+                console.error('分析错误:', error);
+                addProgressMessage('连接错误，尝试传统方式...', 'error');
+                
+                // 降级到传统方式
+                await fallbackToTraditionalMethod(url);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔍 分析并获取所有JSON';
+            }
+        }
+        
+        // 降级到传统HTTP请求方式
+        async function fallbackToTraditionalMethod(url) {
+            try {
+                showStatus('正在连接服务器...', 'info');
+                addProgressMessage('使用传统方式获取数据...', 'info');
+                
+                const response = await fetch('http://localhost:3002/analyze-and-fetch', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || `服务器错误: ${response.status}`);
+                }
+
+                const data = await response.json();
+                allRulesData = data;
+                
+                // 保存所有JSON内容
+                data.rules.forEach(rule => {
+                    if (rule.content) {
+                        jsonContents[rule.outputFile] = rule.content;
+                    }
+                });
+                
+                addProgressMessage('✅ 数据获取完成！', 'success');
+                displayResults(data);
+                showStatus(`✅ 成功获取 ${data.rules.length} 个规则的数据`, 'success');
+                
+            } catch (error) {
+                console.error('分析错误:', error);
+                addProgressMessage(`错误: ${error.message}`, 'error');
+                showStatus(`错误: ${error.message}`, 'error');
+            }
+        }
+        
+        // 创建进度显示区域
+        function createProgressArea() {
+            let progressArea = document.getElementById('progress-area');
+            if (!progressArea) {
+                progressArea = document.createElement('div');
+                progressArea.id = 'progress-area';
+                progressArea.style.cssText = `
+                    margin: 20px 0;
+                    padding: 15px;
+                    background: #f8f9fa;
+                    border-radius: 8px;
+                    border: 1px solid #dee2e6;
+                    max-height: 300px;
+                    overflow-y: auto;
+                `;
+                
+                const container = document.querySelector('.container');
+                const resultSection = document.getElementById('result-section');
+                container.insertBefore(progressArea, resultSection);
+            }
+            
+            progressArea.innerHTML = '<div style="font-weight: bold; color: #495057; margin-bottom: 10px;">📊 分析进度</div>';
+            progressArea.style.display = 'block';
+        }
+        
+        // 添加进度消息
+        function addProgressMessage(message, type = 'info') {
+            const progressArea = document.getElementById('progress-area');
+            if (!progressArea) return;
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.style.cssText = `
+                padding: 5px 10px;
+                margin: 2px 0;
+                border-radius: 4px;
+                font-family: monospace;
+                font-size: 13px;
+            `;
+            
+            switch(type) {
+                case 'success':
+                    messageDiv.style.background = '#d1e7dd';
+                    messageDiv.style.color = '#0f5132';
+                    messageDiv.style.border = '1px solid #badbcc';
+                    break;
+                case 'error':
+                    messageDiv.style.background = '#f8d7da';
+                    messageDiv.style.color = '#842029';
+                    messageDiv.style.border = '1px solid #f5c2c7';
+                    break;
+                default:
+                    messageDiv.style.background = '#cfe2ff';
+                    messageDiv.style.color = '#084298';
+                    messageDiv.style.border = '1px solid #b6d4fe';
+            }
+            
+            messageDiv.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+            progressArea.appendChild(messageDiv);
+            
+            // 自动滚动到底部
+            progressArea.scrollTop = progressArea.scrollHeight;
+        }
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status-message');
+            statusDiv.className = `status-message status-${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+        }
+
+        function displayResults(data) {
+            const resultSection = document.getElementById('result-section');
+            
+            let html = `
+                <div class="result-header">
+                    <div class="result-title">分析结果</div>
+                    <div style="color: #6c757d; font-size: 14px;">
+                        找到 ${data.rules.length} 个非verified规则<br>
+                        成功获取 ${data.rules.filter(r => r.content).length} 个JSON文件内容
+                    </div>
+                </div>
+                
+                <div class="action-bar">
+                    <button class="btn btn-primary" onclick="generateAllMarkdown()">
+                        📝 生成所有Markdown文档
+                    </button>
+                    <button class="btn btn-primary" onclick="downloadAllJsons()">
+                        💾 下载所有JSON文件
+                    </button>
+                    <button class="btn btn-primary" onclick="exportSummary()">
+                        📊 导出汇总报告
+                    </button>
+                </div>
+            `;
+
+            data.rules.forEach((rule, index) => {
+                const statusClass = rule.status === 'TIMEOUT' ? 'status-timeout' : 'status-violated';
+                const hasContent = rule.content !== null;
+                
+                html += `
+                    <div class="rule-card">
+                        <div class="rule-header">
+                            <div class="rule-name">${formatRuleName(rule.ruleName)}</div>
+                            <span class="rule-status ${statusClass}">${rule.status}</span>
+                        </div>
+                        
+                        ${hasContent ? `
+                            <div class="markdown-content" id="rule-content-${index}" style="display: none;">
+                                <pre>生成中...</pre>
+                            </div>
+                        ` : `
+                            <div style="color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 6px;">
+                                获取失败: ${rule.error || '未知错误'}
+                            </div>
+                        `}
+                        
+                        <div class="rule-actions">
+                            ${hasContent ? `
+                                <button class="rule-btn" onclick="toggleMarkdown(${index})">
+                                    📝 显示/隐藏 MD
+                                </button>
+                                <button class="rule-btn" onclick="copyRuleMarkdown(${index})">
+                                    📋 复制 MD
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            resultSection.innerHTML = html;
+            resultSection.style.display = 'block';
+        }
+
+        function generateMarkdown(index) {
+            const rule = allRulesData.rules[index];
+            if (!rule.content) return;
+
+            const md = convertToMarkdown(rule);
+            displayMarkdown(md, rule.ruleName); // 使用规则名作为文件名
+        }
+
+        function generateAllMarkdown() {
+            if (!allRulesData) return;
+
+            // 清空之前的输出
+            const existingOutputs = document.querySelectorAll('.markdown-output');
+            existingOutputs.forEach(el => el.remove());
+
+            allRulesData.rules.forEach((rule, index) => {
+                if (rule.content) {
+                    const md = convertToMarkdown(rule);
+                    displayMarkdown(md, rule.ruleName);
+                }
+            });
+            
+            showStatus(`✅ 已生成 ${allRulesData.rules.filter(r => r.content).length} 个Markdown文档`, 'success');
+            
+            // 滚动到第一个生成的文档
+            setTimeout(() => {
+                const firstOutput = document.querySelector('.markdown-output');
+                if (firstOutput) {
+                    firstOutput.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, 100);
+        }
+
+        // 使用certora_har_to_markdown.html的完整解析逻辑
+        function convertToMarkdown(rule) {
+            const traceData = rule.content;
+            // 简化规则名称，只保留违反的那个rule，去掉↳及后面的内容
+            const simplifiedRuleName = rule.ruleName.split('↳')[0].trim();
+            let md = `# Certora Call Trace\n\n`;
+            md += `**Rule:** ${simplifiedRuleName}\n`;
+            md += `**Status:** ${rule.status}\n\n`;
+
+            // 1. Call Trace (first position)
+            if (traceData.callTrace) {
+                md += `## 🌳 Call Trace\n\n`;
+                let globalStateCounter = 1;
+                md += convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
+            }
+
+            // 2. Variables (second position) - 直接从variables数组中提取
+            md += `\n## 📊 Variables\n\n`;
+            if (traceData.variables && Array.isArray(traceData.variables) && traceData.variables.length > 0) {
+                md += renderVariablesFromArray(traceData.variables);
+            } else {
+                md += `暂无变量数据\n\n`;
+            }
+
+            // 3. Global State Diff (third position) - 从Call Trace中的Global State节点计算变化
+            const globalStateDiff = calculateGlobalStateDiff(traceData.callTrace);
+            if (Object.keys(globalStateDiff).length > 0) {
+                md += `## 🔄 Global State Diff\n\n`;
+                md += renderGlobalStateDiff(globalStateDiff);
+            }
+
+            // 4. Call Resolution Warnings (last position)
+            if (traceData.callResolutionWarnings && traceData.callResolutionWarnings.length > 0) {
+                md += `## 🚨 Call Resolution Warnings\n\n`;
+                traceData.callResolutionWarnings.forEach((warning, index) => {
+                    md += `### Warning #${index + 1}\n\n`;
+                    if (warning.caller) {
+                        md += `**Caller**: ${warning.caller.name || 'Unknown'}\n`;
+                    }
+                    if (warning.callee) {
+                        md += `**Callee**: ${warning.callee.name || 'Unknown'}\n`;
+                    }
+                    if (warning.summary) {
+                        md += `**Summary**: ${warning.summary}\n`;
+                    }
+                    if (warning.callSite) {
+                        md += `**Call Site**: ${warning.callSite.snippet || 'Unknown'}\n`;
+                        if (warning.callSite.jumpToDefinition) {
+                            md += `**Location**: ${warning.callSite.jumpToDefinition.file}:${warning.callSite.jumpToDefinition.start.line}\n`;
+                        }
+                    }
+                    if (warning.comments && warning.comments.length > 0) {
+                        md += `**Comments**:\n`;
+                        warning.comments.forEach(comment => {
+                            if (typeof comment === 'object') {
+                                const key = Object.keys(comment)[0];
+                                md += `- **${key}**: ${comment[key]}\n`;
+                            } else {
+                                md += `- ${comment}\n`;
+                            }
+                        });
+                    }
+                    md += `\n`;
+                });
+            }
+
+            return md;
+        }
+
+        // 从certora_har_to_markdown.html复制的辅助函数
+        function convertTraceToMarkdown(node, level, context = { counter: 1 }) {
+            const indent = '  '.repeat(level);
+            let md = '';
+
+            let messageText = node.message?.text || '';
+            if (node.message?.arguments) {
+                node.message.arguments.forEach((arg, index) => {
+                    const value = arg.value || (arg.values && arg.values[0]) || '?';
+                    messageText = messageText.replace(`{${index}}`, value);
+                });
+            }
+
+            // 为 Global State 添加编号
+            if (messageText === 'Global State') {
+                messageText = `Global State #${context.counter}`;
+                context.counter++;
+            }
+
+            const statusBadge = node.status && node.status.trim() ? ` **[${node.status}]**` : '';
+            md += `${indent}- ${messageText}${statusBadge}\n`;
+
+            if (node.childrenList && node.childrenList.length > 0) {
+                node.childrenList.forEach(child => {
+                    md += convertTraceToMarkdown(child, level + 1, context);
+                });
+            }
+
+            return md;
+        }
+
+        // 从variables数组中渲染层次结构
+        function renderVariablesFromArray(variables) {
+            let md = '';
+            
+            variables.forEach((variable, index) => {
+                // 只处理有variableName字段的对象
+                if (variable && typeof variable === 'object' && variable.hasOwnProperty('variableName')) {
+                    // 处理有childrenList的变量（如 e）
+                    if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
+                        md += renderNestedVariable(variable);
+                    } else {
+                        // 简单变量，直接输出变量名和值
+                        const name = variable.variableName;
+                        const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
+                        md += `${name}: \`${value}\`\n\n`;
+                    }
+                }
+            });
+            
+            return md;
+        }
+
+        // 处理嵌套变量（如 e 变量的子变量）
+        function renderNestedVariable(variable, parentPath = []) {
+            let md = '';
+            const currentPath = parentPath.length > 0 ? [...parentPath, variable.variableName] : [variable.variableName];
+            
+            // 如果有子变量，递归处理
+            if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
+                variable.childrenList.forEach(child => {
+                    // 确保child是有效的对象且有variableName
+                    if (child && typeof child === 'object' && child.hasOwnProperty('variableName')) {
+                        md += renderNestedVariable(child, currentPath);
+                    }
+                });
+            } else {
+                // 叶节点，输出完整路径和值
+                const fullPath = currentPath.join('.');
+                const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
+                md += `${fullPath}: \`${value}\`\n\n`;
+            }
+            
+            return md;
+        }
+
+        // 计算Global State差异
+        function calculateGlobalStateDiff(callTrace) {
+            if (!callTrace) return {};
+            
+            const globalStateNodes = [];
+            
+            // 收集所有Global State节点
+            collectGlobalStateNodes(callTrace, globalStateNodes);
+            
+            if (globalStateNodes.length === 0) {
+                return {};
+            }
+            
+            // 提取第一个和最后一个Global State的状态
+            const firstState = extractStateFromGlobalNode(globalStateNodes[0]);
+            const lastState = extractStateFromGlobalNode(globalStateNodes[globalStateNodes.length - 1]);
+            
+            // 计算差异
+            const diff = {};
+            
+            // 收集所有状态键
+            const allKeys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
+            
+            allKeys.forEach(key => {
+                const firstValue = firstState[key];
+                const lastValue = lastState[key];
+                
+                // 只有当值确实发生变化时才记录
+                if (firstValue !== lastValue) {
+                    diff[key] = {
+                        from: firstValue || 'undefined',
+                        to: lastValue || 'undefined',
+                        changed: true
+                    };
+                } else if (firstValue && lastValue) {
+                    // 值没有变化，但存在于两个状态中
+                    diff[key] = {
+                        from: firstValue,
+                        to: lastValue,
+                        changed: false
+                    };
+                }
+            });
+            
+            return diff;
+        }
+
+        // 递归收集所有Global State节点
+        function collectGlobalStateNodes(node, globalStateNodes) {
+            if (node.message && node.message.text === "Global State") {
+                globalStateNodes.push(node);
+            }
+            
+            if (node.childrenList) {
+                node.childrenList.forEach(child => {
+                    collectGlobalStateNodes(child, globalStateNodes);
+                });
+            }
+        }
+
+        // 从Global State节点中提取状态信息
+        function extractStateFromGlobalNode(globalStateNode) {
+            const state = {};
+            
+            if (globalStateNode.childrenList) {
+                globalStateNode.childrenList.forEach(child => {
+                    extractStateRecursively(child, state);
+                });
+            }
+            
+            return state;
+        }
+
+        // 递归提取状态信息
+        function extractStateRecursively(node, state) {
+            // 如果节点有arguments，说明这是一个状态记录
+            if (node.message && node.message.arguments && node.message.arguments.length > 0) {
+                // 替换占位符得到完整的状态路径
+                let fullPath = node.message.text;
+                let stateValue = null;
+                
+                node.message.arguments.forEach((arg, index) => {
+                    const placeholder = `{${index}}`;
+                    if (fullPath.includes(placeholder)) {
+                        if (arg.value && arg.value !== '*') {
+                            // 使用最易读的值表示
+                            let displayValue = arg.value;
+                            if (arg.values && arg.values.length > 1) {
+                                // 如果有十进制表示，优先使用
+                                const decValue = arg.values.find(v => !v.startsWith('0x') && v !== arg.value && !isNaN(v));
+                                if (decValue && parseInt(decValue) < 1000000) {
+                                    displayValue = `${arg.value} (${decValue})`;
+                                }
+                            }
+                            fullPath = fullPath.replace(placeholder, displayValue);
+                            
+                            // 最后一个参数通常是值
+                            if (index === node.message.arguments.length - 1) {
+                                stateValue = displayValue;
+                            }
+                        } else {
+                            fullPath = fullPath.replace(placeholder, arg.value || 'undefined');
+                        }
+                    }
+                });
+                
+                // 解析路径和值
+                const parsed = parseStatePath(fullPath, stateValue);
+                if (parsed.path && parsed.value !== null) {
+                    state[parsed.path] = parsed.value;
+                }
+            }
+            
+            // 递归处理子节点
+            if (node.childrenList) {
+                node.childrenList.forEach(child => {
+                    extractStateRecursively(child, state);
+                });
+            }
+        }
+
+        // 解析状态路径
+        function parseStatePath(fullText, extractedValue) {
+            const colonIndex = fullText.indexOf(': ');
+            if (colonIndex === -1) {
+                return { path: fullText.trim(), value: extractedValue || 'undefined' };
+            }
+            
+            const path = fullText.substring(0, colonIndex).trim();
+            let value = fullText.substring(colonIndex + 2).trim();
+            
+            // 如果有从arguments中提取的值，优先使用
+            if (extractedValue && extractedValue !== 'undefined') {
+                value = extractedValue;
+            }
+            
+            // 清理引号
+            value = value.replace(/^['"]|['"]$/g, '');
+            
+            return { path, value };
+        }
+
+        // 渲染Global State差异
+        function renderGlobalStateDiff(diff) {
+            let md = '';
+            
+            // 按路径类型分组
+            const groups = {
+                'storage': { title: 'Storage Changes', items: [] },
+                'balance': { title: 'Balance Changes', items: [] },
+                'ghost': { title: 'Ghost Variable Changes', items: [] }
+            };
+            
+            Object.entries(diff).forEach(([path, change]) => {
+                let groupType = 'storage'; // 默认分类为storage
+                
+                if (path.includes('.balance:') || path.endsWith('.balance')) {
+                    groupType = 'balance';
+                } else if (path.includes('isInPlotIndexes') || path.includes('sumOfHarvestedBeans')) {
+                    groupType = 'ghost';
+                } else if (path.startsWith('s.') || path.includes('s.accts') || path.includes('s.sys')) {
+                    groupType = 'storage';
+                }
+                
+                groups[groupType].items.push({ path, change });
+            });
+            
+            // 渲染各组
+            Object.entries(groups).forEach(([groupKey, group]) => {
+                if (group.items.length > 0) {
+                    md += `### ${group.title}\n\n`;
+                    
+                    group.items.forEach(({ path, change }) => {
+                        if (change.changed) {
+                            md += `- **${path}**: \`${change.from}\` → \`${change.to}\`\n\n`;
+                        } else {
+                            md += `- **${path}**: \`${change.to}\` *(unchanged)*\n\n`;
+                        }
+                    });
+                    
+                    md += `\n`;
+                }
+            });
+            
+            return md;
+        }
+
+        // 格式化规则名称，显示层级结构
+        function formatRuleName(ruleName) {
+            const parts = ruleName.split(' > ');
+            if (parts.length === 1) {
+                return `<strong>${parts[0]}</strong>`;
+            }
+            
+            // 主规则名
+            let formatted = `<strong>${parts[0]}</strong>`;
+            
+            // 如果有子级，显示最后一级和层级数
+            if (parts.length > 1) {
+                const lastPart = parts[parts.length - 1];
+                formatted += `<br><span style="color: #6c757d; font-size: 13px; margin-left: 20px;">
+                    ↳ ${lastPart} <em>(层级: ${parts.length})</em>
+                </span>`;
+            }
+            
+            return formatted;
+        }
+
+        // 获取简化的文件名
+        function getSimpleFileName(ruleName) {
+            const parts = ruleName.split(' > ');
+            // 取主规则名和最后一部分
+            if (parts.length === 1) {
+                return parts[0];
+            }
+            // 如果有多层，使用主规则名_最后一层
+            const mainRule = parts[0];
+            const lastPart = parts[parts.length - 1]
+                .replace(/[\(\)]/g, '')
+                .replace(/[,\s]+/g, '_')
+                .substring(0, 30); // 限制长度
+            return `${mainRule}_${lastPart}`;
+        }
+
+        function displayMarkdown(content, ruleName) {
+            // 使用简化的文件名
+            const fileName = getSimpleFileName(ruleName);
+            const cleanName = fileName.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/__+/g, '_');
+            
+            // 创建显示容器
+            const outputDiv = document.createElement('div');
+            outputDiv.className = 'markdown-output';
+            outputDiv.innerHTML = `
+                <div class="markdown-header">
+                    <div class="markdown-title">
+                        📝 ${cleanName}.md
+                    </div>
+                    <button class="copy-btn" onclick="copyMarkdown(this)">
+                        📋 复制 Markdown
+                    </button>
+                </div>
+                <div class="markdown-content">
+                    <pre>${escapeHtml(content)}</pre>
+                </div>
+            `;
+            
+            // 将输出添加到结果区域
+            const resultSection = document.getElementById('result-section');
+            resultSection.appendChild(outputDiv);
+        }
+
+        function copyMarkdown(button) {
+            const markdownContent = button.closest('.markdown-output').querySelector('pre').textContent;
+            
+            navigator.clipboard.writeText(markdownContent).then(() => {
+                const originalText = button.textContent;
+                button.textContent = '🎉 已复制！';
+                button.style.background = '#28a745';
+                button.style.color = 'white';
+                
+                showStatus('🎉 Markdown已成功复制到剪贴板！', 'success');
+                showCopySuccess();
+                
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.style.background = '';
+                    button.style.color = '';
+                }, 3000);
+            }).catch(err => {
+                // 降级方案
+                const textArea = document.createElement('textarea');
+                textArea.value = markdownContent;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                button.textContent = '🎉 已复制！';
+                showStatus('🎉 Markdown已成功复制到剪贴板！', 'success');
+                showCopySuccess();
+                setTimeout(() => {
+                    button.textContent = '📋 复制 Markdown';
+                }, 3000);
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 显示复制成功的动画提示
+        function showCopySuccess() {
+            // 创建临时提示元素
+            const notification = document.createElement('div');
+            notification.innerHTML = '🎉 复制成功！';
+            notification.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: #28a745;
+                color: white;
+                padding: 20px 40px;
+                border-radius: 10px;
+                font-size: 18px;
+                font-weight: bold;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                z-index: 10000;
+                animation: copySuccessAnimation 0.6s ease-out;
+            `;
+            
+            // 添加CSS动画
+            if (!document.querySelector('#copySuccessStyle')) {
+                const style = document.createElement('style');
+                style.id = 'copySuccessStyle';
+                style.textContent = `
+                    @keyframes copySuccessAnimation {
+                        0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+                        50% { transform: translate(-50%, -50%) scale(1.1); opacity: 1; }
+                        100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            document.body.appendChild(notification);
+            
+            // 2秒后移除
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+                }
+            }, 2000);
+        }
+
+        // 切换单个规则的Markdown显示
+        function toggleMarkdown(index) {
+            const rule = allRulesData.rules[index];
+            if (!rule.content) return;
+            
+            const contentDiv = document.getElementById(`rule-content-${index}`);
+            
+            if (contentDiv.style.display === 'none') {
+                // 生成并显示Markdown
+                const md = convertToMarkdown(rule);
+                contentDiv.innerHTML = `<pre>${escapeHtml(md)}</pre>`;
+                contentDiv.style.display = 'block';
+            } else {
+                // 隐藏Markdown
+                contentDiv.style.display = 'none';
+            }
+        }
+
+        // 复制单个规则的Markdown
+        function copyRuleMarkdown(index) {
+            const rule = allRulesData.rules[index];
+            if (!rule.content) return;
+            
+            const md = convertToMarkdown(rule);
+            
+            navigator.clipboard.writeText(md).then(() => {
+                showStatus('🎉 Markdown已成功复制到剪贴板！', 'success');
+                // 添加临时高亮提示
+                showCopySuccess();
+            }).catch(() => {
+                // 降级方案
+                const textArea = document.createElement('textarea');
+                textArea.value = md;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                showStatus('🎉 Markdown已成功复制到剪贴板！', 'success');
+                showCopySuccess();
+            });
+        }
+
+        function downloadJson(index) {
+            const rule = allRulesData.rules[index];
+            if (!rule.content) return;
+
+            const blob = new Blob([JSON.stringify(rule.content, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = rule.outputFile;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadAllJsons() {
+            if (!allRulesData) return;
+
+            allRulesData.rules.forEach(rule => {
+                if (rule.content) {
+                    const blob = new Blob([JSON.stringify(rule.content, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = rule.outputFile;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                }
+            });
+        }
+
+        function exportSummary() {
+            if (!allRulesData) return;
+
+            let summary = `# Certora Analysis Summary\n\n`;
+            summary += `**URL:** ${allRulesData.url}\n`;
+            summary += `**Time:** ${new Date(allRulesData.timestamp).toLocaleString('zh-CN')}\n`;
+            summary += `**Total Rules:** ${allRulesData.totalRules}\n\n`;
+            
+            summary += `## Failed Rules\n\n`;
+            allRulesData.rules.forEach((rule, i) => {
+                summary += `${i + 1}. **${rule.ruleName}**\n`;
+                summary += `   - Status: ${rule.status}\n`;
+                summary += `   - File: ${rule.outputFile}\n`;
+                summary += `   - Content: ${rule.content ? '✅ Retrieved' : '❌ Failed'}\n\n`;
+            });
+            
+            downloadMarkdown(summary, 'certora_summary.md');
+            showStatus('✅ 报告已导出', 'success');
+        }
+
+        // 启动提示
+        window.addEventListener('DOMContentLoaded', () => {
+            showStatus('请先运行: node scripts/certora_auto_server.mjs', 'info');
+        });
+    </script>
+</body>
+</html>
