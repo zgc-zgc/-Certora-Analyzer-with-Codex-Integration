@@ -350,95 +350,10 @@
             btn.disabled = true;
             btn.textContent = '⏳ 分析中...';
             
-            // 清空之前的结果
-            const resultSection = document.getElementById('result-section');
-            resultSection.style.display = 'none';
-            allRulesData = null;
-            
-            // 创建进度显示区域
-            createProgressArea();
-            
+            showStatus('正在连接服务器...', 'info');
+
             try {
-                // 使用fetch发送POST请求到SSE端点
-                const response = await fetch('http://localhost:3002/analyze-and-fetch-stream', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ url })
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`服务器错误: ${response.status}`);
-                }
-                
-                // 读取SSE流
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
-                    
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.slice(6));
-                                
-                                switch(data.type) {
-                                    case 'info':
-                                        addProgressMessage(data.message, 'info');
-                                        break;
-                                    case 'success':
-                                        addProgressMessage(data.message, 'success');
-                                        break;
-                                    case 'error':
-                                        addProgressMessage(data.message, 'error');
-                                        showStatus(`错误: ${data.message}`, 'error');
-                                        break;
-                                    case 'complete':
-                                        addProgressMessage('✅ 分析完成！', 'success');
-                                        allRulesData = data.data;
-                                        
-                                        // 保存所有JSON内容
-                                        data.data.rules.forEach(rule => {
-                                            if (rule.content) {
-                                                jsonContents[rule.outputFile] = rule.content;
-                                            }
-                                        });
-                                        
-                                        displayResults(data.data);
-                                        showStatus(`✅ 成功获取 ${data.data.rules.length} 个规则的数据`, 'success');
-                                        break;
-                                }
-                            } catch (parseError) {
-                                console.log('解析SSE数据失败:', parseError);
-                            }
-                        }
-                    }
-                }
-                
-            } catch (error) {
-                console.error('分析错误:', error);
-                addProgressMessage('连接错误，尝试传统方式...', 'error');
-                
-                // 降级到传统方式
-                await fallbackToTraditionalMethod(url);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '🔍 分析并获取所有JSON';
-            }
-        }
-        
-        // 降级到传统HTTP请求方式
-        async function fallbackToTraditionalMethod(url) {
-            try {
-                showStatus('正在连接服务器...', 'info');
-                addProgressMessage('使用传统方式获取数据...', 'info');
-                
+                // 调用本地服务
                 const response = await fetch('http://localhost:3002/analyze-and-fetch', {
                     method: 'POST',
                     headers: {
@@ -461,79 +376,17 @@
                         jsonContents[rule.outputFile] = rule.content;
                     }
                 });
-                
-                addProgressMessage('✅ 数据获取完成！', 'success');
+
                 displayResults(data);
                 showStatus(`✅ 成功获取 ${data.rules.length} 个规则的数据`, 'success');
                 
             } catch (error) {
-                console.error('分析错误:', error);
-                addProgressMessage(`错误: ${error.message}`, 'error');
-                showStatus(`错误: ${error.message}`, 'error');
+                console.error('Error:', error);
+                showStatus(`错误: ${error.message}。请确保运行了: node scripts/certora_auto_server.mjs`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔍 分析并获取所有JSON';
             }
-        }
-        
-        // 创建进度显示区域
-        function createProgressArea() {
-            let progressArea = document.getElementById('progress-area');
-            if (!progressArea) {
-                progressArea = document.createElement('div');
-                progressArea.id = 'progress-area';
-                progressArea.style.cssText = `
-                    margin: 20px 0;
-                    padding: 15px;
-                    background: #f8f9fa;
-                    border-radius: 8px;
-                    border: 1px solid #dee2e6;
-                    max-height: 300px;
-                    overflow-y: auto;
-                `;
-                
-                const container = document.querySelector('.container');
-                const resultSection = document.getElementById('result-section');
-                container.insertBefore(progressArea, resultSection);
-            }
-            
-            progressArea.innerHTML = '<div style="font-weight: bold; color: #495057; margin-bottom: 10px;">📊 分析进度</div>';
-            progressArea.style.display = 'block';
-        }
-        
-        // 添加进度消息
-        function addProgressMessage(message, type = 'info') {
-            const progressArea = document.getElementById('progress-area');
-            if (!progressArea) return;
-            
-            const messageDiv = document.createElement('div');
-            messageDiv.style.cssText = `
-                padding: 5px 10px;
-                margin: 2px 0;
-                border-radius: 4px;
-                font-family: monospace;
-                font-size: 13px;
-            `;
-            
-            switch(type) {
-                case 'success':
-                    messageDiv.style.background = '#d1e7dd';
-                    messageDiv.style.color = '#0f5132';
-                    messageDiv.style.border = '1px solid #badbcc';
-                    break;
-                case 'error':
-                    messageDiv.style.background = '#f8d7da';
-                    messageDiv.style.color = '#842029';
-                    messageDiv.style.border = '1px solid #f5c2c7';
-                    break;
-                default:
-                    messageDiv.style.background = '#cfe2ff';
-                    messageDiv.style.color = '#084298';
-                    messageDiv.style.border = '1px solid #b6d4fe';
-            }
-            
-            messageDiv.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
-            progressArea.appendChild(messageDiv);
-            
-            // 自动滚动到底部
-            progressArea.scrollTop = progressArea.scrollHeight;
         }
 
         function showStatus(message, type = 'info') {
@@ -556,15 +409,7 @@
                 </div>
                 
                 <div class="action-bar">
-                    <button class="btn btn-primary" onclick="generateAllMarkdown()">
-                        📝 生成所有Markdown文档
-                    </button>
-                    <button class="btn btn-primary" onclick="downloadAllJsons()">
-                        💾 下载所有JSON文件
-                    </button>
-                    <button class="btn btn-primary" onclick="exportSummary()">
-                        📊 导出汇总报告
-                    </button>
+                    <!-- 移除了生成所有Markdown文档、下载所有JSON文件、导出汇总报告功能 -->
                 </div>
             `;
 
