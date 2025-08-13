@@ -495,11 +495,36 @@
 
         // 处理 Codex 输出，只保留最终回答
         function extractCodexAnswer(fullOutput) {
-            // 查找 "tokens used:" 之前的内容
+            // 查找最后一个时间戳标记和 "tokens used:" 之间的内容
             const lines = fullOutput.split('\n');
-            let lastCodexIndex = -1;
+            let lastTimeIndex = -1;
             let tokensUsedIndex = -1;
             
+            // 查找最后一个时间戳标记，格式如 [2025-01-01T10:30:00]
+            for (let i = lines.length - 1; i >= 0; i--) {
+                if (lines[i].includes('tokens used:')) {
+                    tokensUsedIndex = i;
+                }
+                if (tokensUsedIndex > -1 && lines[i].match(/^\[[\d\-T:\.Z]+\]/)) {
+                    lastTimeIndex = i;
+                    break;
+                }
+            }
+            
+            if (lastTimeIndex >= 0 && tokensUsedIndex > lastTimeIndex) {
+                // 提取最后一个时间戳后到 tokens used 之前的内容
+                const answerLines = lines.slice(lastTimeIndex + 1, tokensUsedIndex);
+                let answer = answerLines.join('\n').trim();
+                
+                // 移除可能的额外标记
+                answer = answer.replace(/^(Assistant|AI|Codex):\s*/gm, '');
+                answer = answer.replace(/^\s*[-•]\s*/gm, '');
+                
+                return answer || fullOutput;
+            }
+            
+            // 如果没找到时间戳，尝试查找 "codex" 标记
+            let lastCodexIndex = -1;
             for (let i = 0; i < lines.length; i++) {
                 if (lines[i].includes('] codex')) {
                     lastCodexIndex = i;
@@ -511,12 +536,11 @@
             }
             
             if (lastCodexIndex >= 0 && tokensUsedIndex > lastCodexIndex) {
-                // 提取 codex 标记后到 tokens used 之前的内容
                 const answerLines = lines.slice(lastCodexIndex + 1, tokensUsedIndex);
                 return answerLines.join('\n').trim();
             }
             
-            // 如果没找到标记，返回原内容
+            // 如果都没找到，返回原内容
             return fullOutput;
         }
 
@@ -644,7 +668,7 @@
                         <div style="position: relative;">
                             <textarea class="codex-analysis" 
                                       id="analysis-${rule.outputFile}" 
-                                      placeholder="点击"分析"按钮获取Codex分析结果..."
+                                      placeholder="点击分析按钮获取Codex分析结果..."
                                       onclick="expandCodexAnalysis('${rule.outputFile}')"
                                       readonly></textarea>
                             <button class="copy-btn-small" 
@@ -939,20 +963,23 @@
             statusDiv.style.display = 'block';
         }
 
-        // 复制convertToMarkdown函数（从原HTML文件）
+        // 根据参考项目重写的convertToMarkdown函数
         function convertToMarkdown(rule) {
             const traceData = rule.content;
             const simplifiedRuleName = rule.ruleName.split('↳')[0].trim();
-            let md = `# Certora Call Trace\n\n`;
+            let md = `# Certora Trace Analysis\n\n`;
             md += `**Rule:** ${simplifiedRuleName}\n`;
-            md += `**Status:** ${rule.status}\n\n`;
+            md += `**Status:** ${rule.status}\n`;
+            md += `**File:** ${rule.outputFile}\n\n`;
 
+            // 1. Call Trace (first position)
             if (traceData.callTrace) {
                 md += `## 🌳 Call Trace\n\n`;
                 let globalStateCounter = 1;
                 md += convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
             }
 
+            // 2. Variables (second position) - 直接从variables数组中提取
             md += `\n## 📊 Variables\n\n`;
             if (traceData.variables && Array.isArray(traceData.variables) && traceData.variables.length > 0) {
                 md += renderVariablesFromArray(traceData.variables);
@@ -960,12 +987,14 @@
                 md += `暂无变量数据\n\n`;
             }
 
+            // 3. Global State Diff (third position) - 从Call Trace中的Global State节点计算变化
             const globalStateDiff = calculateGlobalStateDiff(traceData.callTrace);
             if (Object.keys(globalStateDiff).length > 0) {
                 md += `## 🔄 Global State Diff\n\n`;
                 md += renderGlobalStateDiff(globalStateDiff);
             }
 
+            // 4. Call Resolution Warnings (last position)
             if (traceData.callResolutionWarnings && traceData.callResolutionWarnings.length > 0) {
                 md += `## 🚨 Call Resolution Warnings\n\n`;
                 traceData.callResolutionWarnings.forEach((warning, index) => {
@@ -979,6 +1008,23 @@
                     if (warning.summary) {
                         md += `**Summary**: ${warning.summary}\n`;
                     }
+                    if (warning.callSite) {
+                        md += `**Call Site**: ${warning.callSite.snippet || 'Unknown'}\n`;
+                        if (warning.callSite.jumpToDefinition) {
+                            md += `**Location**: ${warning.callSite.jumpToDefinition.file}:${warning.callSite.jumpToDefinition.start.line}\n`;
+                        }
+                    }
+                    if (warning.comments && warning.comments.length > 0) {
+                        md += `**Comments**:\n`;
+                        warning.comments.forEach(comment => {
+                            if (typeof comment === 'object') {
+                                const key = Object.keys(comment)[0];
+                                md += `- **${key}**: ${comment[key]}\n`;
+                            } else {
+                                md += `- ${comment}\n`;
+                            }
+                        });
+                    }
                     md += `\n`;
                 });
             }
@@ -986,7 +1032,7 @@
             return md;
         }
 
-        // 其他辅助函数（从原HTML复制必要的）
+        // Call Trace转换 - 参考项目版本
         function convertTraceToMarkdown(node, level, context = { counter: 1 }) {
             const indent = '  '.repeat(level);
             let md = '';
@@ -994,8 +1040,23 @@
             let messageText = node.message?.text || '';
             if (node.message?.arguments) {
                 node.message.arguments.forEach((arg, index) => {
-                    const value = arg.value || (arg.values && arg.values[0]) || '?';
-                    messageText = messageText.replace(`{${index}}`, value);
+                    const placeholder = `{${index}}`;
+                    let value = '?';
+                    
+                    if (arg.value !== undefined) {
+                        value = arg.value;
+                        // 如果有多个值表示，优先显示可读性高的
+                        if (arg.values && arg.values.length > 1) {
+                            const decValue = arg.values.find(v => !v.startsWith('0x') && v !== arg.value && !isNaN(v));
+                            if (decValue && parseInt(decValue) < 1000000) {
+                                value = `${arg.value} (${decValue})`;
+                            }
+                        }
+                    } else if (arg.values && Array.isArray(arg.values) && arg.values.length > 0) {
+                        value = arg.values[0];
+                    }
+                    
+                    messageText = messageText.replace(placeholder, value);
                 });
             }
 
@@ -1016,121 +1077,232 @@
             return md;
         }
 
-        function renderVariablesFromArray(variables) {
-            let md = '';
-            variables.forEach(variable => {
-                if (variable && typeof variable === 'object' && variable.hasOwnProperty('variableName')) {
-                    if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
-                        md += renderNestedVariable(variable);
-                    } else {
-                        const name = variable.variableName;
-                        const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
-                        md += `${name}: \`${value}\`\n\n`;
-                    }
+        // 计算Global State差异 - 参考项目版本  
+        function calculateGlobalStateDiff(callTrace) {
+            const globalStateNodes = [];
+            
+            // 收集所有Global State节点
+            collectGlobalStateNodes(callTrace, globalStateNodes);
+            
+            if (globalStateNodes.length === 0) {
+                return {};
+            }
+            
+            // 提取第一个和最后一个Global State的状态
+            const firstState = extractStateFromGlobalNode(globalStateNodes[0]);
+            const lastState = extractStateFromGlobalNode(globalStateNodes[globalStateNodes.length - 1]);
+            
+            // 计算差异
+            const diff = {};
+            
+            // 收集所有状态键
+            const allKeys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
+            
+            allKeys.forEach(key => {
+                const firstValue = firstState[key];
+                const lastValue = lastState[key];
+                
+                // 只有当值确实发生变化时才记录
+                if (firstValue !== lastValue) {
+                    diff[key] = {
+                        from: firstValue || 'undefined',
+                        to: lastValue || 'undefined',
+                        changed: true
+                    };
+                } else if (firstValue && lastValue) {
+                    // 值没有变化，但存在于两个状态中
+                    diff[key] = {
+                        from: firstValue,
+                        to: lastValue,
+                        changed: false
+                    };
                 }
             });
+            
+            return diff;
+        }
+
+        // 递归收集所有Global State节点
+        function collectGlobalStateNodes(node, globalStateNodes) {
+            if (node && node.message && node.message.text === "Global State") {
+                globalStateNodes.push(node);
+            }
+            
+            if (node && node.childrenList) {
+                node.childrenList.forEach(child => {
+                    collectGlobalStateNodes(child, globalStateNodes);
+                });
+            }
+        }
+
+        // 从Global State节点中提取状态信息
+        function extractStateFromGlobalNode(globalStateNode) {
+            const state = {};
+            
+            if (globalStateNode.childrenList) {
+                globalStateNode.childrenList.forEach(child => {
+                    extractStateRecursively(child, state);
+                });
+            }
+            
+            return state;
+        }
+
+        // 递归提取状态信息
+        function extractStateRecursively(node, state) {
+            // 如果节点有arguments，说明这是一个状态记录
+            if (node.message && node.message.arguments && node.message.arguments.length > 0) {
+                // 替换占位符得到完整的状态路径
+                let fullPath = node.message.text;
+                let stateValue = null;
+                
+                node.message.arguments.forEach((arg, index) => {
+                    const placeholder = `{${index}}`;
+                    if (fullPath.includes(placeholder)) {
+                        if (arg.value && arg.value !== '*') {
+                            // 使用最易读的值表示
+                            let displayValue = arg.value;
+                            if (arg.values && arg.values.length > 1) {
+                                // 如果有十进制表示，优先使用
+                                const decValue = arg.values.find(v => !v.startsWith('0x') && v !== arg.value && !isNaN(v));
+                                if (decValue && parseInt(decValue) < 1000000) {
+                                    displayValue = `${arg.value} (${decValue})`;
+                                }
+                            }
+                            fullPath = fullPath.replace(placeholder, displayValue);
+                            
+                            // 最后一个参数通常是值
+                            if (index === node.message.arguments.length - 1) {
+                                stateValue = displayValue;
+                            }
+                        } else {
+                            fullPath = fullPath.replace(placeholder, arg.value || 'undefined');
+                        }
+                    }
+                });
+                
+                // 解析路径和值
+                const parsed = parseStatePath(fullPath, stateValue);
+                if (parsed.path && parsed.value !== null) {
+                    state[parsed.path] = parsed.value;
+                }
+            }
+            
+            // 递归处理子节点
+            if (node.childrenList) {
+                node.childrenList.forEach(child => {
+                    extractStateRecursively(child, state);
+                });
+            }
+        }
+
+        // 解析状态路径
+        function parseStatePath(fullText, extractedValue) {
+            const colonIndex = fullText.indexOf(': ');
+            if (colonIndex === -1) {
+                return { path: fullText.trim(), value: extractedValue || 'undefined' };
+            }
+            
+            const path = fullText.substring(0, colonIndex).trim();
+            let value = fullText.substring(colonIndex + 2).trim();
+            
+            // 如果有从arguments中提取的值，优先使用
+            if (extractedValue && extractedValue !== 'undefined') {
+                value = extractedValue;
+            }
+            
+            // 清理引号
+            value = value.replace(/^['"]|['"]$/g, '');
+            
+            return { path, value };
+        }
+
+        // 渲染Global State差异
+        function renderGlobalStateDiff(diff) {
+            let md = '';
+            
+            // 按路径类型分组
+            const groups = {
+                'storage': { title: 'Storage Changes', items: [] },
+                'balance': { title: 'Balance Changes', items: [] },
+                'ghost': { title: 'Ghost Variable Changes', items: [] },
+                'other': { title: 'Other Changes', items: [] }
+            };
+            
+            Object.entries(diff).forEach(([path, change]) => {
+                const item = { path, change };
+                
+                if (path.includes('storage') || path.includes('balanceOf') || path.includes('_storage')) {
+                    groups.storage.items.push(item);
+                } else if (path.includes('balance') || path.includes('Balance')) {
+                    groups.balance.items.push(item);
+                } else if (path.includes('ghost') || path.includes('Ghost')) {
+                    groups.ghost.items.push(item);
+                } else {
+                    groups.other.items.push(item);
+                }
+            });
+            
+            // 渲染各组
+            Object.values(groups).forEach(group => {
+                if (group.items.length > 0) {
+                    md += `### ${group.title}\n\n`;
+                    group.items.forEach(item => {
+                        const { path, change } = item;
+                        if (change.changed) {
+                            md += `- **${path}**: \`${change.from}\` → \`${change.to}\` ✨\n`;
+                        } else {
+                            md += `- **${path}**: \`${change.from}\` (unchanged)\n`;
+                        }
+                    });
+                    md += `\n`;
+                }
+            });
+            
             return md;
         }
 
+        // 从variables数组中渲染层次结构 - 参考项目版本
+        function renderVariablesFromArray(variables) {
+            let md = '';
+            
+            variables.forEach((variable, index) => {
+                // 只处理有variableName字段的对象
+                if (variable && typeof variable === 'object' && variable.hasOwnProperty('variableName')) {
+                    // 处理有childrenList的变量
+                    if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
+                        md += renderNestedVariable(variable);
+                    } else {
+                        // 简单变量，直接输出变量名和值
+                        const name = variable.variableName;
+                        const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
+                        md += `**${name}**: \`${value}\`\n\n`;
+                    }
+                }
+            });
+            
+            return md;
+        }
+
+        // 处理嵌套变量 - 参考项目版本
         function renderNestedVariable(variable, parentPath = []) {
             let md = '';
             const currentPath = parentPath.length > 0 ? [...parentPath, variable.variableName] : [variable.variableName];
             
+            // 如果有子变量，递归处理
             if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
                 variable.childrenList.forEach(child => {
+                    // 确保child是有效的对象且有variableName
                     if (child && typeof child === 'object' && child.hasOwnProperty('variableName')) {
                         md += renderNestedVariable(child, currentPath);
                     }
                 });
             } else {
+                // 叶节点，输出完整路径和值
                 const fullPath = currentPath.join('.');
                 const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
-                md += `${fullPath}: \`${value}\`\n\n`;
+                md += `**${fullPath}**: \`${value}\`\n\n`;
             }
-            
-            return md;
-        }
-
-        function calculateGlobalStateDiff(callTrace) {
-            const globalStates = {};
-            
-            function extractGlobalStates(node, path = []) {
-                if (!node) return;
-                
-                // 检查是否是Global State节点
-                if (node.message && node.message.text === 'Global State') {
-                    const stateIndex = Object.keys(globalStates).length + 1;
-                    const stateName = `Global State #${stateIndex}`;
-                    globalStates[stateName] = {};
-                    
-                    // 提取变量值
-                    if (node.childrenList) {
-                        node.childrenList.forEach(child => {
-                            if (child.message && child.message.text) {
-                                const text = child.message.text;
-                                // 解析变量赋值，如 "balanceOf[user] := 100"
-                                const assignMatch = text.match(/^(.+?)\s*:=\s*(.+)$/);
-                                if (assignMatch) {
-                                    globalStates[stateName][assignMatch[1].trim()] = assignMatch[2].trim();
-                                }
-                            }
-                        });
-                    }
-                }
-                
-                // 递归处理子节点
-                if (node.childrenList) {
-                    node.childrenList.forEach(child => {
-                        extractGlobalStates(child, [...path, node.message?.text || '']);
-                    });
-                }
-            }
-            
-            extractGlobalStates(callTrace);
-            return globalStates;
-        }
-
-        function renderGlobalStateDiff(globalStates) {
-            let md = '';
-            const stateKeys = Object.keys(globalStates);
-            
-            stateKeys.forEach((stateName, index) => {
-                md += `### ${stateName}\n\n`;
-                const state = globalStates[stateName];
-                const variables = Object.keys(state);
-                
-                if (variables.length > 0) {
-                    variables.forEach(variable => {
-                        md += `- **${variable}**: \`${state[variable]}\`\n`;
-                    });
-                } else {
-                    md += `- 无变量变化\n`;
-                }
-                
-                // 如果有下一个状态，显示差异
-                if (index < stateKeys.length - 1) {
-                    const nextState = globalStates[stateKeys[index + 1]];
-                    const changes = [];
-                    
-                    // 检查变量变化
-                    Object.keys(nextState).forEach(variable => {
-                        if (state[variable] && state[variable] !== nextState[variable]) {
-                            changes.push(`${variable}: \`${state[variable]}\` → \`${nextState[variable]}\``);
-                        } else if (!state[variable]) {
-                            changes.push(`${variable}: 新增 \`${nextState[variable]}\``);
-                        }
-                    });
-                    
-                    if (changes.length > 0) {
-                        md += `\n**变化到 ${stateKeys[index + 1]}:**\n`;
-                        changes.forEach(change => {
-                            md += `- ${change}\n`;
-                        });
-                    }
-                }
-                
-                md += `\n`;
-            });
             
             return md;
         }
