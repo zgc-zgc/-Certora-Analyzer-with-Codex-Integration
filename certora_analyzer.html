@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certora Analyzer with Codex</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 25px 70px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .input-section {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+        }
+
+        .url-input {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 16px;
+            border: 2px solid #dee2e6;
+            border-radius: 10px;
+            transition: border-color 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 14px 32px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-right: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+            color: white;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+            color: white;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .status-message {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .status-info {
+            background: #cfe2ff;
+            color: #084298;
+            border: 1px solid #b6d4fe;
+        }
+
+        .status-success {
+            background: #d1e7dd;
+            color: #0f5132;
+            border: 1px solid #badbcc;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #842029;
+            border: 1px solid #f5c2c7;
+        }
+
+        .result-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .result-table th,
+        .result-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .result-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .result-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-violated {
+            background: #dc3545;
+            color: white;
+        }
+
+        .status-sanity-failed {
+            background: #fd7e14;
+            color: white;
+        }
+
+        .status-timeout {
+            background: #6c757d;
+            color: white;
+        }
+
+        .codex-analysis {
+            width: 100%;
+            min-height: 100px;
+            max-height: 200px;
+            padding: 10px;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            resize: vertical;
+            overflow-y: auto;
+        }
+
+        .codex-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+
+        .codex-modal-content {
+            position: relative;
+            background: white;
+            margin: 50px auto;
+            padding: 20px;
+            width: 90%;
+            max-width: 1200px;
+            max-height: 80vh;
+            overflow-y: auto;
+            border-radius: 10px;
+        }
+
+        .codex-content {
+            background: #f8f9fa;
+            color: #212529;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .action-buttons {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .prover-url {
+            margin-top: 20px;
+            padding: 20px;
+            background: #d4edda;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .prover-url a {
+            color: #155724;
+            font-weight: 600;
+        }
+
+        .markdown-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+
+        .markdown-modal-content {
+            position: relative;
+            background: white;
+            margin: 50px auto;
+            padding: 20px;
+            width: 80%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            border-radius: 10px;
+        }
+
+        .close-modal {
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            font-size: 28px;
+            cursor: pointer;
+            color: #999;
+        }
+
+        .close-modal:hover {
+            color: #333;
+        }
+
+        .markdown-content {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Certora Analyzer with Codex Integration</h1>
+            <p>自动分析 CVL 验证失败案例并提供修复建议</p>
+        </div>
+
+        <div class="content">
+            <div class="input-section">
+                <h3 style="margin-bottom: 20px; color: #212529;">输入 Certora URL</h3>
+                <input type="text" 
+                       class="url-input" 
+                       id="certora-url" 
+                       placeholder="https://prover.certora.com/output/..."
+                       value="">
+                
+                <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
+                    🔍 获取验证数据
+                </button>
+
+                <div id="status-message"></div>
+            </div>
+
+            <div id="action-buttons" class="action-buttons" style="display: none;">
+                <button class="btn btn-success" onclick="analyzeAllRules()">
+                    🤖 Codex 分析所有规则
+                </button>
+                <button class="btn btn-danger" id="stopAnalysisBtn" onclick="stopAnalysis()" style="display: none;">
+                    ⏹️ 停止分析
+                </button>
+                <button class="btn btn-warning" onclick="fixAll()">
+                    🔧 执行批量修复
+                </button>
+            </div>
+
+            <div id="result-section" style="display: none;">
+                <table class="result-table" id="result-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 25%;">规则名</th>
+                            <th style="width: 10%;">状态</th>
+                            <th style="width: 10%;">Markdown</th>
+                            <th style="width: 40%;">Codex分析（可编辑）</th>
+                            <th style="width: 15%;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="result-tbody">
+                    </tbody>
+                </table>
+            </div>
+
+            <div id="prover-url" class="prover-url">
+                验证完成！查看结果：<a href="#" target="_blank" id="prover-link"></a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Markdown Modal -->
+    <div id="markdown-modal" class="markdown-modal">
+        <div class="markdown-modal-content">
+            <span class="close-modal" onclick="closeMarkdownModal()">&times;</span>
+            <h3 id="modal-title" style="margin-bottom: 20px;">Markdown 内容</h3>
+            <div id="modal-content" class="markdown-content"></div>
+        </div>
+    </div>
+
+    <!-- Codex Analysis Modal -->
+    <div id="codex-modal" class="codex-modal">
+        <div class="codex-modal-content">
+            <span class="close-modal" onclick="closeCodexModal()">&times;</span>
+            <h3 id="codex-modal-title" style="margin-bottom: 20px;">Codex 分析详情</h3>
+            <div id="codex-modal-content" class="codex-content"></div>
+        </div>
+    </div>
+
+    <script>
+        let allRulesData = null;
+        let jsonContents = {};
+        let processedRules = [];
+        let sanityAggregated = null;
+        let stopAnalysisFlag = false;
+        const analysisControllers = new Map(); // 为每个分析维护独立的控制器
+
+        // 处理 Codex 输出，只保留最终回答
+        function extractCodexAnswer(fullOutput) {
+            // 查找 "tokens used:" 之前的内容
+            const lines = fullOutput.split('\n');
+            let lastCodexIndex = -1;
+            let tokensUsedIndex = -1;
+            
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes('] codex')) {
+                    lastCodexIndex = i;
+                }
+                if (lines[i].includes('tokens used:')) {
+                    tokensUsedIndex = i;
+                    break;
+                }
+            }
+            
+            if (lastCodexIndex >= 0 && tokensUsedIndex > lastCodexIndex) {
+                // 提取 codex 标记后到 tokens used 之前的内容
+                const answerLines = lines.slice(lastCodexIndex + 1, tokensUsedIndex);
+                return answerLines.join('\n').trim();
+            }
+            
+            // 如果没找到标记，返回原内容
+            return fullOutput;
+        }
+
+        async function analyzeUrl() {
+            const url = document.getElementById('certora-url').value.trim();
+            if (!url) {
+                showStatus('请输入URL', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('analyzeBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ 获取中...';
+            
+            showStatus('正在获取验证数据...', 'info');
+
+            try {
+                // 调用本地服务
+                const response = await fetch('http://localhost:3002/analyze-and-fetch', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || `服务器错误: ${response.status}`);
+                }
+
+                const data = await response.json();
+                allRulesData = data;
+                
+                // 保存所有JSON内容
+                data.rules.forEach(rule => {
+                    if (rule.content) {
+                        jsonContents[rule.outputFile] = rule.content;
+                    }
+                });
+
+                processData(data);
+                showStatus(`✅ 成功获取 ${data.rules.length} 个规则的数据`, 'success');
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus(`错误: ${error.message}。请确保运行了: node scripts/certora_auto_server.mjs`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔍 获取验证数据';
+            }
+        }
+
+        function processData(data) {
+            processedRules = [];
+            
+            // 处理 VIOLATED 规则
+            data.rules.filter(r => r.status === 'VIOLATED').forEach(rule => {
+                const markdown = rule.content ? convertToMarkdown(rule) : '';
+                processedRules.push({
+                    ...rule,
+                    type: 'VIOLATED',
+                    markdown: markdown,
+                    displayName: rule.ruleName
+                });
+            });
+            
+            // 整合 SANITY_FAILED 规则
+            const sanityFailed = data.rules.filter(r => r.status === 'SANITY_FAILED');
+            if (sanityFailed.length > 0) {
+                sanityAggregated = aggregateSanityFailures(sanityFailed);
+                processedRules.push({
+                    ruleName: '汇总: Sanity Failed 规则',
+                    status: 'SANITY_FAILED',
+                    type: 'SANITY_FAILED',
+                    markdown: sanityAggregated,
+                    displayName: '汇总: Sanity Failed 规则',
+                    outputFile: 'sanity_aggregated'
+                });
+            }
+            
+            displayResults();
+            document.getElementById('action-buttons').style.display = 'flex';
+        }
+
+        function aggregateSanityFailures(rules) {
+            const sanityMap = new Map();
+            
+            rules.forEach(rule => {
+                const parts = rule.ruleName.split(' > ');
+                const baseRule = parts[0];
+                const funcName = parts[parts.length - 1];
+                
+                if (!sanityMap.has(baseRule)) {
+                    sanityMap.set(baseRule, new Set());
+                }
+                sanityMap.get(baseRule).add(funcName);
+            });
+            
+            return Array.from(sanityMap.entries()).map(([rule, funcs]) => 
+                `规则 ${rule} 在以下函数中 sanity failed:\n${Array.from(funcs).map(f => `- ${f}`).join('\n')}`
+            ).join('\n\n');
+        }
+
+        function displayResults() {
+            const tbody = document.getElementById('result-tbody');
+            tbody.innerHTML = '';
+            
+            processedRules.forEach((rule, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${formatRuleName(rule.displayName)}</td>
+                    <td><span class="status-badge status-${rule.status.toLowerCase().replace('_', '-')}">${rule.status}</span></td>
+                    <td>
+                        <button class="btn" style="padding: 6px 12px; font-size: 14px;" 
+                                onclick="viewMarkdown(${index})">查看</button>
+                    </td>
+                    <td>
+                        <textarea class="codex-analysis" 
+                                  id="analysis-${rule.outputFile}" 
+                                  placeholder="点击"分析"按钮获取Codex分析结果..."
+                                  onclick="expandCodexAnalysis('${rule.outputFile}')"
+                                  readonly></textarea>
+                    </td>
+                    <td>
+                        <div style="display: flex; gap: 5px;">
+                            <button class="btn btn-primary" id="analyze-btn-${rule.outputFile}" 
+                                    style="padding: 6px 12px; font-size: 14px;" 
+                                    onclick="analyzeRule(${index})">分析</button>
+                            <button class="btn btn-danger" id="stop-btn-${rule.outputFile}" 
+                                    style="padding: 6px 12px; font-size: 14px; display: none;" 
+                                    onclick="stopSingleAnalysis('${rule.outputFile}')">停止</button>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+            document.getElementById('result-section').style.display = 'block';
+        }
+
+        function expandCodexAnalysis(outputFile) {
+            const textarea = document.getElementById(`analysis-${outputFile}`);
+            if (textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
+                document.getElementById('codex-modal-title').textContent = 'Codex 分析详情';
+                document.getElementById('codex-modal-content').textContent = textarea.value;
+                document.getElementById('codex-modal').style.display = 'block';
+            }
+        }
+
+        function closeCodexModal() {
+            document.getElementById('codex-modal').style.display = 'none';
+        }
+
+        function formatRuleName(name) {
+            const parts = name.split(' > ');
+            if (parts.length === 1) {
+                return name;
+            }
+            return `${parts[0]} > ... > ${parts[parts.length - 1]}`;
+        }
+
+        function viewMarkdown(index) {
+            const rule = processedRules[index];
+            document.getElementById('modal-title').textContent = `Markdown - ${rule.displayName}`;
+            document.getElementById('modal-content').textContent = rule.markdown;
+            document.getElementById('markdown-modal').style.display = 'block';
+        }
+
+        function closeMarkdownModal() {
+            document.getElementById('markdown-modal').style.display = 'none';
+        }
+
+        async function analyzeRule(index, isBatchAnalysis = false) {
+            // 只有在批量分析时才检查 stopAnalysisFlag
+            if (isBatchAnalysis && stopAnalysisFlag) {
+                console.log('批量分析被停止标志阻止');
+                return;
+            }
+            
+            const rule = processedRules[index];
+            if (!rule) {
+                console.error(`规则索引 ${index} 不存在`);
+                return;
+            }
+            
+            const outputFile = rule.outputFile;
+            
+            console.log(`开始分析规则: ${outputFile}, 批量分析: ${isBatchAnalysis}`);
+            console.log(`规则类型: ${rule.type}, Markdown长度: ${rule.markdown ? rule.markdown.length : 0}`);
+            
+            const textarea = document.getElementById(`analysis-${outputFile}`);
+            const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
+            const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
+            
+            if (!textarea || !analyzeBtn) {
+                console.error(`找不到UI元素: textarea=${!!textarea}, analyzeBtn=${!!analyzeBtn}`);
+                return;
+            }
+            
+            // 如果这个规则已经在分析中，不重复分析
+            if (analysisControllers.has(outputFile)) {
+                console.log(`规则 ${outputFile} 已在分析中，跳过`);
+                return;
+            }
+            
+            // 显示停止按钮，隐藏分析按钮
+            if (analyzeBtn) analyzeBtn.style.display = 'none';
+            if (stopBtn) stopBtn.style.display = 'inline-block';
+            
+            textarea.value = '分析中...';
+            textarea.disabled = true;
+            
+            // 为这个特定的分析创建 AbortController
+            const controller = new AbortController();
+            analysisControllers.set(outputFile, controller);
+            
+            console.log(`创建了控制器，当前控制器数量: ${analysisControllers.size}`);
+            
+            // 检查控制器是否立即被中止
+            if (controller.signal.aborted) {
+                console.error('控制器创建后立即被中止！');
+                analysisControllers.delete(outputFile);
+                textarea.value = '分析失败：控制器被中止';
+                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                if (stopBtn) stopBtn.style.display = 'none';
+                return;
+            }
+            
+            try {
+                console.log(`发送分析请求: ${rule.type}, Markdown前100字符: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
+                
+                // 确保 markdown 存在
+                if (!rule.markdown) {
+                    throw new Error('Markdown内容为空');
+                }
+                
+                const requestBody = { 
+                    content: rule.markdown, 
+                    type: rule.type 
+                };
+                
+                console.log(`请求体大小: ${JSON.stringify(requestBody).length} 字节`);
+                
+                const response = await fetch('http://localhost:3002/analyze-rule', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody),
+                    signal: controller.signal
+                });
+                
+                console.log(`收到响应: ${response.status}`);
+                
+                // 检查响应是否正常
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                if (result.success) {
+                    // 提取并显示简化的回答
+                    const simplifiedAnswer = extractCodexAnswer(result.analysis);
+                    textarea.value = simplifiedAnswer;
+                    // 移除 readonly，使其可编辑
+                    textarea.readOnly = false;
+                    console.log(`分析成功: ${outputFile}`);
+                } else {
+                    textarea.value = `分析失败: ${result.error}`;
+                    console.log(`分析失败: ${outputFile}, 错误: ${result.error}`);
+                }
+            } catch (error) {
+                console.error(`分析出错: ${outputFile}`, error);
+                console.error('错误详情:', {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                });
+                
+                if (error.name === 'AbortError') {
+                    console.log('请求被中止，控制器状态:', controller.signal.aborted);
+                    textarea.value = '分析已取消';
+                } else if (error.message.includes('Failed to fetch')) {
+                    textarea.value = '无法连接到服务器，请确保服务器正在运行';
+                } else if (error.message === 'Markdown内容为空') {
+                    textarea.value = '错误：没有可分析的内容';
+                } else {
+                    textarea.value = `错误: ${error.message}`;
+                }
+            } finally {
+                textarea.disabled = false;
+                // 恢复按钮状态
+                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                if (stopBtn) stopBtn.style.display = 'none';
+                // 清理控制器
+                analysisControllers.delete(outputFile);
+                console.log(`清理控制器，剩余控制器数量: ${analysisControllers.size}`);
+            }
+        }
+
+        function stopSingleAnalysis(outputFile) {
+            const controller = analysisControllers.get(outputFile);
+            if (controller) {
+                controller.abort();
+                analysisControllers.delete(outputFile);
+            }
+            
+            const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
+            const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
+            const textarea = document.getElementById(`analysis-${outputFile}`);
+            
+            // 恢复按钮状态
+            if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+            if (stopBtn) stopBtn.style.display = 'none';
+            if (textarea) {
+                textarea.value = '分析已停止';
+                textarea.disabled = false;
+            }
+        }
+
+        async function analyzeAllRules() {
+            stopAnalysisFlag = false;
+            document.getElementById('stopAnalysisBtn').style.display = 'inline-block';
+            showStatus('开始批量分析...', 'info');
+            
+            for (let i = 0; i < processedRules.length; i++) {
+                if (stopAnalysisFlag) {
+                    showStatus('分析已停止', 'info');
+                    break;
+                }
+                // 批量分析时传入 true 参数
+                await analyzeRule(i, true);
+            }
+            
+            document.getElementById('stopAnalysisBtn').style.display = 'none';
+            if (!stopAnalysisFlag) {
+                showStatus('✅ 所有规则分析完成', 'success');
+            }
+        }
+
+        function stopAnalysis() {
+            stopAnalysisFlag = true;
+            // 停止所有正在进行的分析
+            analysisControllers.forEach((controller, outputFile) => {
+                controller.abort();
+                // 更新对应的UI
+                const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
+                const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
+                const textarea = document.getElementById(`analysis-${outputFile}`);
+                
+                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                if (stopBtn) stopBtn.style.display = 'none';
+                if (textarea && textarea.value === '分析中...') {
+                    textarea.value = '批量分析已停止';
+                    textarea.disabled = false;
+                }
+            });
+            analysisControllers.clear();
+            
+            document.getElementById('stopAnalysisBtn').style.display = 'none';
+            showStatus('批量分析已停止', 'info');
+        }
+
+        async function fixAll() {
+            const analyses = [];
+            
+            document.querySelectorAll('.codex-analysis').forEach(textarea => {
+                if (textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
+                    analyses.push(textarea.value);
+                }
+            });
+            
+            if (analyses.length === 0) {
+                showStatus('没有可用的分析结果', 'error');
+                return;
+            }
+            
+            showStatus(`正在执行修复（共 ${analyses.length} 个任务）...`, 'info');
+            
+            try {
+                const response = await fetch('http://localhost:3002/fix-all', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ analyses })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    if (result.url) {
+                        document.getElementById('prover-link').href = result.url;
+                        document.getElementById('prover-link').textContent = result.url;
+                        document.getElementById('prover-url').style.display = 'block';
+                        showStatus('✅ 修复完成，验证已启动', 'success');
+                    } else {
+                        showStatus(result.message || '修复完成', 'success');
+                    }
+                } else {
+                    showStatus(`修复失败: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`错误: ${error.message}`, 'error');
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status-message');
+            statusDiv.className = `status-message status-${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+        }
+
+        // 复制convertToMarkdown函数（从原HTML文件）
+        function convertToMarkdown(rule) {
+            const traceData = rule.content;
+            const simplifiedRuleName = rule.ruleName.split('↳')[0].trim();
+            let md = `# Certora Call Trace\n\n`;
+            md += `**Rule:** ${simplifiedRuleName}\n`;
+            md += `**Status:** ${rule.status}\n\n`;
+
+            if (traceData.callTrace) {
+                md += `## 🌳 Call Trace\n\n`;
+                let globalStateCounter = 1;
+                md += convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
+            }
+
+            md += `\n## 📊 Variables\n\n`;
+            if (traceData.variables && Array.isArray(traceData.variables) && traceData.variables.length > 0) {
+                md += renderVariablesFromArray(traceData.variables);
+            } else {
+                md += `暂无变量数据\n\n`;
+            }
+
+            const globalStateDiff = calculateGlobalStateDiff(traceData.callTrace);
+            if (Object.keys(globalStateDiff).length > 0) {
+                md += `## 🔄 Global State Diff\n\n`;
+                md += renderGlobalStateDiff(globalStateDiff);
+            }
+
+            if (traceData.callResolutionWarnings && traceData.callResolutionWarnings.length > 0) {
+                md += `## 🚨 Call Resolution Warnings\n\n`;
+                traceData.callResolutionWarnings.forEach((warning, index) => {
+                    md += `### Warning #${index + 1}\n\n`;
+                    if (warning.caller) {
+                        md += `**Caller**: ${warning.caller.name || 'Unknown'}\n`;
+                    }
+                    if (warning.callee) {
+                        md += `**Callee**: ${warning.callee.name || 'Unknown'}\n`;
+                    }
+                    if (warning.summary) {
+                        md += `**Summary**: ${warning.summary}\n`;
+                    }
+                    md += `\n`;
+                });
+            }
+
+            return md;
+        }
+
+        // 其他辅助函数（从原HTML复制必要的）
+        function convertTraceToMarkdown(node, level, context = { counter: 1 }) {
+            const indent = '  '.repeat(level);
+            let md = '';
+
+            let messageText = node.message?.text || '';
+            if (node.message?.arguments) {
+                node.message.arguments.forEach((arg, index) => {
+                    const value = arg.value || (arg.values && arg.values[0]) || '?';
+                    messageText = messageText.replace(`{${index}}`, value);
+                });
+            }
+
+            if (messageText === 'Global State') {
+                messageText = `Global State #${context.counter}`;
+                context.counter++;
+            }
+
+            const statusBadge = node.status && node.status.trim() ? ` **[${node.status}]**` : '';
+            md += `${indent}- ${messageText}${statusBadge}\n`;
+
+            if (node.childrenList && node.childrenList.length > 0) {
+                node.childrenList.forEach(child => {
+                    md += convertTraceToMarkdown(child, level + 1, context);
+                });
+            }
+
+            return md;
+        }
+
+        function renderVariablesFromArray(variables) {
+            let md = '';
+            variables.forEach(variable => {
+                if (variable && typeof variable === 'object' && variable.hasOwnProperty('variableName')) {
+                    if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
+                        md += renderNestedVariable(variable);
+                    } else {
+                        const name = variable.variableName;
+                        const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
+                        md += `${name}: \`${value}\`\n\n`;
+                    }
+                }
+            });
+            return md;
+        }
+
+        function renderNestedVariable(variable, parentPath = []) {
+            let md = '';
+            const currentPath = parentPath.length > 0 ? [...parentPath, variable.variableName] : [variable.variableName];
+            
+            if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
+                variable.childrenList.forEach(child => {
+                    if (child && typeof child === 'object' && child.hasOwnProperty('variableName')) {
+                        md += renderNestedVariable(child, currentPath);
+                    }
+                });
+            } else {
+                const fullPath = currentPath.join('.');
+                const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
+                md += `${fullPath}: \`${value}\`\n\n`;
+            }
+            
+            return md;
+        }
+
+        function calculateGlobalStateDiff(callTrace) {
+            // 简化版本，返回空对象
+            return {};
+        }
+
+        function renderGlobalStateDiff(diff) {
+            return '';
+        }
+
+        // 启动提示
+        window.addEventListener('DOMContentLoaded', () => {
+            showStatus('请先运行服务器: cd /Users/pixelpanda/certora-scraper && node scripts/certora_auto_server.mjs', 'info');
+        });
+
+        // 点击modal外部关闭
+        window.onclick = function(event) {
+            const modal1 = document.getElementById('markdown-modal');
+            const modal2 = document.getElementById('codex-modal');
+            if (event.target == modal1) {
+                modal1.style.display = 'none';
+            }
+            if (event.target == modal2) {
+                modal2.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
