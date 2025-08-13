@@ -271,36 +271,37 @@ app.post('/analyze-and-fetch', async (req, res) => {
             return numA - numB;
         });
         
-        console.log(`找到 ${sortedRules.length} 个非verified规则，正在获取JSON内容...`);
+        console.log(`找到 ${sortedRules.length} 个非verified规则，正在并发获取JSON内容...`);
         
-        // 获取每个JSON文件的内容
-        const rulesWithContent = [];
-        for (const rule of sortedRules) {
+        // 并发获取所有JSON文件的内容
+        const fetchPromises = sortedRules.map(async (rule) => {
             try {
                 console.log(`获取 ${rule.outputFile}...`);
                 const response = await fetch(rule.url);
                 if (response.ok) {
                     const jsonContent = await response.json();
-                    rulesWithContent.push({
+                    return {
                         ...rule,
                         content: jsonContent
-                    });
+                    };
                 } else {
-                    rulesWithContent.push({
+                    return {
                         ...rule,
                         content: null,
                         error: `HTTP ${response.status}`
-                    });
+                    };
                 }
             } catch (error) {
                 console.error(`获取 ${rule.outputFile} 失败:`, error.message);
-                rulesWithContent.push({
+                return {
                     ...rule,
                     content: null,
                     error: error.message
-                });
+                };
             }
-        }
+        });
+        
+        const rulesWithContent = await Promise.all(fetchPromises);
         
         // 返回完整结果
         res.json({
@@ -315,6 +316,181 @@ app.post('/analyze-and-fetch', async (req, res) => {
         console.error('分析错误:', error);
         await browser.close();
         res.status(500).json({ error: error.message });
+    }
+});
+
+// 新增 /analyze-rule 端点用于单个规则的 Codex 分析
+app.post('/analyze-rule', async (req, res) => {
+    const { content, type } = req.body;
+    
+    if (!content || !type) {
+        return res.status(400).json({ 
+            success: false, 
+            error: '缺少必需参数: content 和 type' 
+        });
+    }
+    
+    console.log(`开始分析规则类型: ${type}, 内容长度: ${content.length}`);
+    
+    try {
+        const { spawn } = await import('child_process');
+        let codexCommand, promptText;
+        
+        if (type === 'VIOLATED') {
+            promptText = `分析以下CVL验证失败的trace，判断是否为假阳性(false positive)。
+重点关注：
+1. 检查initial state是否包含矛盾的变量设置，导致不可达的状态
+2. 分析调用链是否符合实际业务逻辑
+3. 确认违规是真实bug还是由于不现实的初始状态
+
+请提供简洁分析结果：
+
+${content}`;
+        } else if (type === 'SANITY_FAILED') {
+            promptText = `分析以下汇总的CVL sanity failed规则信息，找出共同的失败原因和修复建议：
+
+${content}`;
+        }
+        
+        codexCommand = ['codex', 'exec', promptText];
+        
+        // 分析阶段使用只读模式
+        const codexProcess = spawn('codex', ['exec', '--sandbox', 'read-only', promptText], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env }
+        });
+        
+        let output = '';
+        let errorOutput = '';
+        
+        codexProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        codexProcess.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+        
+        codexProcess.on('error', (error) => {
+            if (error.code === 'ENOENT') {
+                console.error('Codex CLI 未找到，请确保已安装');
+                res.json({ 
+                    success: false, 
+                    error: 'Codex CLI 未找到，请安装 Codex CLI' 
+                });
+            } else if (error.code === 'EPIPE') {
+                console.log('进程管道关闭 (EPIPE) - 这通常是正常的');
+            } else {
+                console.error('Codex 进程错误:', error);
+                res.json({ 
+                    success: false, 
+                    error: `进程错误: ${error.message}` 
+                });
+            }
+        });
+        
+        codexProcess.on('close', (code) => {
+            console.log(`Codex 进程结束，退出码: ${code}`);
+            if (code === 0) {
+                res.json({ 
+                    success: true, 
+                    analysis: output 
+                });
+            } else {
+                const errorMsg = errorOutput || `进程异常退出，码: ${code}`;
+                console.error('Codex 执行错误:', errorMsg);
+                res.json({ 
+                    success: false, 
+                    error: errorMsg 
+                });
+            }
+        });
+        
+    } catch (error) {
+        console.error('分析错误:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// 新增 /fix-all 端点用于批量修复
+app.post('/fix-all', async (req, res) => {
+    const { analyses } = req.body;
+    
+    if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
+        return res.status(400).json({ 
+            success: false, 
+            error: '缺少分析结果' 
+        });
+    }
+    
+    console.log(`开始批量修复，共 ${analyses.length} 个任务`);
+    
+    try {
+        const { spawn } = await import('child_process');
+        const combinedAnalysis = analyses.join('\n\n---\n\n');
+        
+        const promptText = `基于以下CVL分析结果，生成修复建议和代码改进：
+
+${combinedAnalysis}
+
+请提供具体的修复步骤和代码建议。`;
+        
+        // 修复阶段使用full-auto模式（允许写文件和执行命令）
+        const codexProcess = spawn('codex', ['exec', '--full-auto', promptText], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env }
+        });
+        
+        let output = '';
+        let errorOutput = '';
+        
+        codexProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        codexProcess.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+        
+        codexProcess.on('error', (error) => {
+            if (error.code === 'EPIPE') {
+                console.log('修复进程管道关闭 (EPIPE) - 这通常是正常的');
+            } else {
+                console.error('修复进程错误:', error);
+                res.json({ 
+                    success: false, 
+                    error: `进程错误: ${error.message}` 
+                });
+            }
+        });
+        
+        codexProcess.on('close', (code) => {
+            console.log(`修复进程结束，退出码: ${code}`);
+            if (code === 0) {
+                res.json({ 
+                    success: true, 
+                    message: '修复建议已生成',
+                    analysis: output 
+                });
+            } else {
+                const errorMsg = errorOutput || `修复进程异常退出，码: ${code}`;
+                console.error('修复执行错误:', errorMsg);
+                res.json({ 
+                    success: false, 
+                    error: errorMsg 
+                });
+            }
+        });
+        
+    } catch (error) {
+        console.error('修复错误:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 

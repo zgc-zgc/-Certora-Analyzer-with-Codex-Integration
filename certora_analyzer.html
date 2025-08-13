@@ -310,6 +310,104 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        .copy-notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            z-index: 2000;
+            box-shadow: 0 4px 12px rgba(40, 167, 69, 0.3);
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 0.3s ease;
+        }
+
+        .copy-notification.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .copy-btn {
+            background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            margin-left: 8px;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(23, 162, 184, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .copy-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(23, 162, 184, 0.4);
+            background: linear-gradient(135deg, #138496 0%, #117a8b 100%);
+        }
+
+        .copy-btn:active {
+            transform: translateY(0);
+        }
+        
+        .view-btn {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .view-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(40, 167, 69, 0.4);
+            background: linear-gradient(135deg, #218838 0%, #1e7e34 100%);
+        }
+
+        .view-btn:active {
+            transform: translateY(0);
+        }
+
+        .copy-btn-small {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(23, 162, 184, 0.9);
+            color: white;
+            border: none;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            opacity: 0.8;
+            backdrop-filter: blur(4px);
+        }
+
+        .copy-btn-small:hover {
+            opacity: 1;
+            transform: scale(1.05);
+            background: rgba(19, 132, 150, 0.95);
+        }
     </style>
 </head>
 <body>
@@ -533,15 +631,27 @@
                     <td>${formatRuleName(rule.displayName)}</td>
                     <td><span class="status-badge status-${rule.status.toLowerCase().replace('_', '-')}">${rule.status}</span></td>
                     <td>
-                        <button class="btn" style="padding: 6px 12px; font-size: 14px;" 
-                                onclick="viewMarkdown(${index})">查看</button>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button class="view-btn" onclick="viewMarkdown(${index})">
+                                📄 查看
+                            </button>
+                            <button class="copy-btn" onclick="copyMarkdown(${index})">
+                                📋 复制MD
+                            </button>
+                        </div>
                     </td>
                     <td>
-                        <textarea class="codex-analysis" 
-                                  id="analysis-${rule.outputFile}" 
-                                  placeholder="点击"分析"按钮获取Codex分析结果..."
-                                  onclick="expandCodexAnalysis('${rule.outputFile}')"
-                                  readonly></textarea>
+                        <div style="position: relative;">
+                            <textarea class="codex-analysis" 
+                                      id="analysis-${rule.outputFile}" 
+                                      placeholder="点击"分析"按钮获取Codex分析结果..."
+                                      onclick="expandCodexAnalysis('${rule.outputFile}')"
+                                      readonly></textarea>
+                            <button class="copy-btn-small" 
+                                    onclick="copyCodexAnalysis('${rule.outputFile}')">
+                                📋 复制
+                            </button>
+                        </div>
                     </td>
                     <td>
                         <div style="display: flex; gap: 5px;">
@@ -942,12 +1052,87 @@
         }
 
         function calculateGlobalStateDiff(callTrace) {
-            // 简化版本，返回空对象
-            return {};
+            const globalStates = {};
+            
+            function extractGlobalStates(node, path = []) {
+                if (!node) return;
+                
+                // 检查是否是Global State节点
+                if (node.message && node.message.text === 'Global State') {
+                    const stateIndex = Object.keys(globalStates).length + 1;
+                    const stateName = `Global State #${stateIndex}`;
+                    globalStates[stateName] = {};
+                    
+                    // 提取变量值
+                    if (node.childrenList) {
+                        node.childrenList.forEach(child => {
+                            if (child.message && child.message.text) {
+                                const text = child.message.text;
+                                // 解析变量赋值，如 "balanceOf[user] := 100"
+                                const assignMatch = text.match(/^(.+?)\s*:=\s*(.+)$/);
+                                if (assignMatch) {
+                                    globalStates[stateName][assignMatch[1].trim()] = assignMatch[2].trim();
+                                }
+                            }
+                        });
+                    }
+                }
+                
+                // 递归处理子节点
+                if (node.childrenList) {
+                    node.childrenList.forEach(child => {
+                        extractGlobalStates(child, [...path, node.message?.text || '']);
+                    });
+                }
+            }
+            
+            extractGlobalStates(callTrace);
+            return globalStates;
         }
 
-        function renderGlobalStateDiff(diff) {
-            return '';
+        function renderGlobalStateDiff(globalStates) {
+            let md = '';
+            const stateKeys = Object.keys(globalStates);
+            
+            stateKeys.forEach((stateName, index) => {
+                md += `### ${stateName}\n\n`;
+                const state = globalStates[stateName];
+                const variables = Object.keys(state);
+                
+                if (variables.length > 0) {
+                    variables.forEach(variable => {
+                        md += `- **${variable}**: \`${state[variable]}\`\n`;
+                    });
+                } else {
+                    md += `- 无变量变化\n`;
+                }
+                
+                // 如果有下一个状态，显示差异
+                if (index < stateKeys.length - 1) {
+                    const nextState = globalStates[stateKeys[index + 1]];
+                    const changes = [];
+                    
+                    // 检查变量变化
+                    Object.keys(nextState).forEach(variable => {
+                        if (state[variable] && state[variable] !== nextState[variable]) {
+                            changes.push(`${variable}: \`${state[variable]}\` → \`${nextState[variable]}\``);
+                        } else if (!state[variable]) {
+                            changes.push(`${variable}: 新增 \`${nextState[variable]}\``);
+                        }
+                    });
+                    
+                    if (changes.length > 0) {
+                        md += `\n**变化到 ${stateKeys[index + 1]}:**\n`;
+                        changes.forEach(change => {
+                            md += `- ${change}\n`;
+                        });
+                    }
+                }
+                
+                md += `\n`;
+            });
+            
+            return md;
         }
 
         // 启动提示
@@ -956,6 +1141,88 @@
         });
 
         // 点击modal外部关闭
+        // 复制功能
+        function showCopyNotification(message) {
+            // 移除现有的通知
+            const existingNotification = document.querySelector('.copy-notification');
+            if (existingNotification) {
+                existingNotification.remove();
+            }
+            
+            // 创建新通知
+            const notification = document.createElement('div');
+            notification.className = 'copy-notification';
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            // 显示动画
+            setTimeout(() => {
+                notification.classList.add('show');
+            }, 10);
+            
+            // 2秒后隐藏并删除
+            setTimeout(() => {
+                notification.classList.remove('show');
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }, 2000);
+        }
+
+        async function copyToClipboard(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                return true;
+            } catch (err) {
+                // 回退方法
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    const successful = document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    return successful;
+                } catch (err) {
+                    document.body.removeChild(textArea);
+                    return false;
+                }
+            }
+        }
+
+        function copyMarkdown(index) {
+            const rule = processedRules[index];
+            if (rule && rule.markdown) {
+                copyToClipboard(rule.markdown).then(success => {
+                    if (success) {
+                        showCopyNotification('✅ Markdown已复制到剪贴板');
+                    } else {
+                        showCopyNotification('❌ 复制失败');
+                    }
+                });
+            } else {
+                showCopyNotification('❌ 没有可复制的Markdown内容');
+            }
+        }
+
+        function copyCodexAnalysis(outputFile) {
+            const textarea = document.getElementById(`analysis-${outputFile}`);
+            if (textarea && textarea.value && textarea.value.trim() !== '' && !textarea.value.includes('分析中...')) {
+                copyToClipboard(textarea.value).then(success => {
+                    if (success) {
+                        showCopyNotification('✅ Codex分析已复制到剪贴板');
+                    } else {
+                        showCopyNotification('❌ 复制失败');
+                    }
+                });
+            } else {
+                showCopyNotification('❌ 没有可复制的分析结果');
+            }
+        }
+
         window.onclick = function(event) {
             const modal1 = document.getElementById('markdown-modal');
             const modal2 = document.getElementById('codex-modal');
