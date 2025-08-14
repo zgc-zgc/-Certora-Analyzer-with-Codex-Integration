@@ -181,8 +181,8 @@
 
         .codex-analysis {
             width: 100%;
-            min-height: 100px;
-            max-height: 200px;
+            min-height: 150px;
+            max-height: 300px;
             padding: 10px;
             border: 1px solid #dee2e6;
             border-radius: 6px;
@@ -190,6 +190,10 @@
             font-size: 12px;
             resize: vertical;
             overflow-y: auto;
+            box-sizing: border-box;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.4;
         }
 
         .codex-modal {
@@ -545,6 +549,20 @@
                 <input type="text" class="url-input" id="certora-url"
                     placeholder="https://prover.certora.com/output/..." value="">
 
+                <div style="margin: 10px 0 20px 0;">
+                    <label for="project-path-main" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
+                        🗂️ Solidity 项目路径（workdir，可选，分析与修复共用）：
+                    </label>
+                    <input type="text" id="project-path-main"
+                           placeholder="/Users/pixelpanda/Pinto/protocol/"
+                           value="/Users/pixelpanda/Pinto/protocol/"
+                           style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
+                                  font-family: 'Courier New', monospace; font-size: 14px;">
+                    <small style="color: #6c757d; display: block; margin-top: 5px;">
+                        💡 将用于 Codex 在正确目录下执行（与修复阶段共用）。
+                    </small>
+                </div>
+
                 <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
                     🔍 获取验证数据
                 </button>
@@ -627,6 +645,20 @@
             
             <textarea id="fix-prompt-editor" class="fix-prompt-editor" 
                       placeholder="正在生成修复 prompt..."></textarea>
+            
+            <div style="margin-bottom: 20px;">
+                <label for="project-path" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
+                    🗂️ Solidity 项目路径（可选）：
+                </label>
+                <input type="text" id="project-path" 
+                       placeholder="/Users/pixelpanda/Pinto/protocol/" 
+                       value="/Users/pixelpanda/Pinto/protocol/"
+                       style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
+                              font-family: 'Courier New', monospace; font-size: 14px;">
+                <small style="color: #6c757d; display: block; margin-top: 5px;">
+                    💡 如果指定路径，Codex 将直接在该目录中工作，跳过项目搜索步骤。留空则使用自动搜索。
+                </small>
+            </div>
             
             <div class="fix-prompt-buttons">
                 <button class="btn btn-danger" onclick="closeFixPromptModal()">
@@ -908,7 +940,7 @@
 
             const outputFile = rule.outputFile;
 
-            console.log(`开始分析规则: ${outputFile}, 批量分析: ${isBatchAnalysis}, 重试次数: ${retryCount}`);
+            console.log(`开始流式分析规则: ${outputFile}, 批量分析: ${isBatchAnalysis}, 重试次数: ${retryCount}`);
             console.log(`规则类型: ${rule.type}, Markdown长度: ${rule.markdown ? rule.markdown.length : 0}`);
 
             const textarea = document.getElementById(`analysis-${outputFile}`);
@@ -933,7 +965,7 @@
             if (retryCount > 0) {
                 textarea.value = `重试中... (${retryCount}/${maxRetries})`;
             } else {
-                textarea.value = '分析中...';
+                textarea.value = '正在连接Codex...';
             }
             textarea.disabled = true;
 
@@ -954,21 +986,26 @@
             }
 
             try {
-                console.log(`发送分析请求: ${rule.type}, Markdown前100字符: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
+                console.log(`发送流式分析请求: ${rule.type}, Markdown前100字符: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
 
                 // 确保 markdown 存在
                 if (!rule.markdown) {
                     throw new Error('Markdown内容为空');
                 }
 
+                const projectPathMain = (document.getElementById('project-path-main')?.value || '').trim();
                 const requestBody = {
                     content: rule.markdown,
                     type: rule.type
                 };
+                if (projectPathMain) {
+                    requestBody.projectPath = projectPathMain;
+                }
 
                 console.log(`请求体大小: ${JSON.stringify(requestBody).length} 字节`);
 
-                const response = await fetch('http://localhost:3002/analyze-rule', {
+                // 使用流式端点
+                const response = await fetch('http://localhost:3002/analyze-rule-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(requestBody),
@@ -992,24 +1029,43 @@
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                const result = await response.json();
-                if (result.success) {
-                    // 提取并显示简化的回答
-                    const simplifiedAnswer = extractCodexAnswer(result.analysis);
-                    textarea.value = simplifiedAnswer;
-                    // 移除 readonly，使其可编辑
-                    textarea.readOnly = false;
-                    console.log(`分析成功: ${outputFile}`);
-                } else {
-                    if (retryCount < maxRetries) {
-                        console.log(`分析失败，将重试: ${result.error}`);
-                        analysisControllers.delete(outputFile);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
+                // 处理SSE流式响应
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                // 为该规则建立持久上下文，避免每次回调创建新对象导致丢失状态
+                const ctx = { fullThinkingProcess: '', finalResult: '' };
+
+                textarea.value = ''; // 清空初始内容
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    // 检查是否被中止
+                    if (controller.signal.aborted) {
+                        reader.cancel();
+                        throw new Error('分析被用户停止');
                     }
-                    textarea.value = `分析失败: ${result.error}`;
-                    console.log(`分析失败: ${outputFile}, 错误: ${result.error}`);
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // 保留不完整的行
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                handleAnalysisStreamData(data, textarea, outputFile, ctx);
+                            } catch (e) {
+                                console.error('解析SSE数据错误:', e, line);
+                            }
+                        }
+                    }
                 }
+
+                console.log(`流式分析完成: ${outputFile}`);
+
             } catch (error) {
                 console.error(`分析出错: ${outputFile}`, error);
                 console.error('错误详情:', {
@@ -1048,6 +1104,64 @@
                 // 清理控制器
                 analysisControllers.delete(outputFile);
                 console.log(`清理控制器，剩余控制器数量: ${analysisControllers.size}`);
+            }
+        }
+
+        function handleAnalysisStreamData(data, textarea, outputFile, context) {
+            switch (data.type) {
+                case 'info':
+                    // 显示连接信息，但不添加到思考过程
+                    if (data.message.includes('开始分析')) {
+                        textarea.value = 'Codex 开始思考...';
+                    }
+                    break;
+                    
+                case 'output':
+                    // 仅显示一次系统头（服务端只会发送这一段）
+                    if (data.message && data.message.trim()) {
+                        context.fullThinkingProcess = data.message.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+                        textarea.value = context.fullThinkingProcess;
+                        textarea.scrollTop = textarea.scrollHeight;
+                    }
+                    break;
+                    
+                case 'final':
+                    // 保存最终结果
+                    context.finalResult = data.message;
+                    break;
+                    
+                case 'success':
+                    // 分析成功完成，用最终结果替换思考过程
+                    let finalContent = '';
+                    if (context.finalResult && context.finalResult.trim()) {
+                        finalContent = context.finalResult.trim();
+                    } else {
+                        // 如果没有最终结果，从 fullThinkingProcess（可能仅含系统头）与后台完整输出中提取
+                        const extracted = extractCodexAnswer(context.fullThinkingProcess);
+                        finalContent = extracted ? extracted.trim() : context.fullThinkingProcess.trim();
+                    }
+                    // 仅展示最终结果（头部信息只在开始时显示，不混入最终内容）
+                    textarea.value = finalContent;
+                    
+                    // 移除 readonly，使其可编辑
+                    textarea.readOnly = false;
+                    console.log(`流式分析成功: ${outputFile}`);
+                    break;
+                    
+                case 'error':
+                    // 显示错误信息
+                    textarea.value = `分析错误: ${data.message}`;
+                    console.error(`流式分析错误: ${outputFile}`, data.message);
+                    break;
+                    
+                case 'complete':
+                    // 分析完成（无论成功还是失败）
+                    console.log(`流式分析结束: ${outputFile}`);
+                    break;
+                    
+                default:
+                    console.log(`未知的流式数据类型: ${data.type}`, data);
+                    break;
             }
         }
 
@@ -1202,6 +1316,10 @@
 
         async function executeFixWithPrompt() {
             const prompt = document.getElementById('fix-prompt-editor').value.trim();
+            let projectPath = (document.getElementById('project-path-main')?.value || '').trim();
+            if (!projectPath) {
+                projectPath = (document.getElementById('project-path')?.value || '').trim();
+            }
             
             if (!prompt) {
                 showFixStatus('请输入修复 prompt', 'error');
@@ -1216,14 +1334,24 @@
             document.getElementById('main-fix-content').textContent = '';
             document.getElementById('main-verification-url').style.display = 'none';
             
-            showMainFixStatus('正在执行修复任务...', 'info');
+            // 显示项目路径信息
+            if (projectPath) {
+                showMainFixStatus(`正在执行修复任务... 项目路径: ${projectPath}`, 'info');
+            } else {
+                showMainFixStatus('正在执行修复任务... 使用自动项目搜索', 'info');
+            }
 
             try {
-                // 使用流式端点执行修复
+                // 使用流式端点执行修复，包含项目路径
+                const requestBody = { prompt };
+                if (projectPath) {
+                    requestBody.projectPath = projectPath;
+                }
+                
                 const response = await fetch('http://localhost:3002/fix-all-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt })
+                    body: JSON.stringify(requestBody)
                 });
 
                 if (!response.ok) {

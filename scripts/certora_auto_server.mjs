@@ -8,6 +8,95 @@ app.use(cors());
 app.use(express.json({ limit: '100mb' }));  // 增加请求体大小限制到 100MB
 app.use(express.urlencoded({ limit: '100mb', extended: true })); // 同样增加表单数据限制
 
+// 处理 Codex 输出，只保留最终回答
+function extractCodexAnswer(fullOutput) {
+    // 从最后一个 tokens used: 回溯，找到最近一个非空候选块
+    const lines = fullOutput.split('\n');
+    const tokenIdxs = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (/tokens used:/i.test(lines[i])) tokenIdxs.push(i);
+    }
+
+    const isMetaLine = (l) => (
+        /^\[[\d\-T:\.Z]+\]/.test(l) ||
+        /\] (exec|bash -lc|codex|thinking)\b/i.test(l) ||
+        /workdir:|model:|provider:|approval:|sandbox:|reasoning/i.test(l) ||
+        /OpenAI Codex/i.test(l)
+    );
+
+    for (let k = tokenIdxs.length - 1; k >= 0; k--) {
+        const t = tokenIdxs[k];
+        // 找到 t 之前最近的时间戳行
+        let s = -1;
+        for (let i = t - 1; i >= 0; i--) {
+            if (/^\[[\d\-T:\.Z]+\]/.test(lines[i])) { s = i; break; }
+        }
+        const slice = lines.slice(s + 1, t);
+        const filtered = slice.filter(l => !isMetaLine(l)).join('\n').trim();
+        if (filtered) return filtered;
+    }
+
+    // 尝试从 "Final answer:" 标记提取
+    const finalIdx = lines.findIndex(l => /^(Final answer|最终答案)\s*:/i.test(l));
+    if (finalIdx !== -1) {
+        return lines.slice(finalIdx + 1).join('\n').trim();
+    }
+
+    // 回退：从最后一个 "User instructions:" 之后开始，过滤明显的系统行
+    let userInstrIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].includes('User instructions:')) { userInstrIdx = i; break; }
+    }
+    let candidate = (userInstrIdx >= 0 ? lines.slice(userInstrIdx + 1) : lines)
+        .filter(l => !isMetaLine(l) && !/tokens used:/i.test(l))
+        .join('\n').trim();
+    return candidate || fullOutput;
+}
+
+// 过滤 Codex 输出，移除prompt回显和系统信息
+function filterCodexOutput(output) {
+    const lines = output.split('\n');
+    const filteredLines = [];
+    let inSystemInfo = true;
+    let inPromptSection = false;
+    
+    for (const line of lines) {
+        // 系统信息阶段 - 保留到 "User instructions:" 之前的所有内容
+        if (inSystemInfo) {
+            if (line.includes('User instructions:')) {
+                inSystemInfo = false;
+                inPromptSection = true;
+                continue; // 跳过 "User instructions:" 这一行
+            }
+            // 保留系统信息
+            filteredLines.push(line);
+            continue;
+        }
+        
+        // 检测prompt结束，开始实际分析
+        if (inPromptSection) {
+            // 检测prompt结束（通常是开始实际分析的地方）
+            if (line.match(/^(根据|基于|分析|这个|我来|让我|首先|## |### |\*\*|# )/)) {
+                inPromptSection = false;
+                filteredLines.push(line); // 包含这行分析开始的内容
+            }
+            // 在prompt阶段，跳过所有内容
+            continue;
+        }
+        
+        // 跳过其他系统信息行（如tokens used等）
+        if (line.includes('[') && line.includes(']') && 
+            (line.includes('codex') || line.includes('tokens used'))) {
+            continue;
+        }
+        
+        // 保留实际的分析内容
+        filteredLines.push(line);
+    }
+    
+    return filteredLines.join('\n');
+}
+
 function parseRunInfo(urlStr) {
     const u = new URL(urlStr);
     const parts = u.pathname.split('/').filter(Boolean);
@@ -319,7 +408,155 @@ app.post('/analyze-and-fetch', async (req, res) => {
     }
 });
 
-// 新增 /analyze-rule 端点用于单个规则的 Codex 分析
+// 新增 /analyze-rule-stream 端点用于单个规则的流式 Codex 分析
+app.post('/analyze-rule-stream', async (req, res) => {
+    const { content, type, projectPath } = req.body;
+
+    if (!content || !type) {
+        return res.status(400).json({
+            success: false,
+            error: '缺少必需参数: content 和 type'
+        });
+    }
+
+    console.log(`开始流式分析规则类型: ${type}, 内容长度: ${content.length}`);
+
+    // 设置SSE响应头
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+    });
+
+    const sendProgress = (message, type = 'output') => {
+        res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+    };
+
+    try {
+        const { spawn } = await import('child_process');
+        let promptText;
+
+        if (type === 'VIOLATED') {
+            promptText = `分析以下CVL验证失败的trace，判断是否为假阳性(false positive)。
+重点关注：
+1. 检查initial state是否包含矛盾的变量设置，导致相互矛盾的状态
+2. 分析调用链是否符合实际业务逻辑
+3. 确认违规是真实bug还是由于相互矛盾的初始状态
+
+请提供简洁分析结果：
+
+${content}`;
+        } else if (type === 'SANITY_FAILED') {
+            promptText = `分析以下汇总的CVL sanity failed规则信息，找出共同的失败原因和修复建议：
+
+${content}`;
+        }
+
+        // 清理提示文本中的null字节
+        const cleanPromptText = promptText.replace(/\0/g, '');
+
+        sendProgress('开始分析...', 'info');
+        if (projectPath && projectPath.trim()) {
+            sendProgress(`设置工作目录: ${projectPath.trim()}`, 'info');
+        }
+
+        // 分析阶段使用只读模式 + 高级推理 + 详细推理总结
+        const codexArgs = [
+            'exec',
+            '--sandbox', 'read-only',
+            '-c', 'model_reasoning_effort=high',
+            '-c', 'model_reasoning_summary=detailed'
+        ];
+        if (projectPath && projectPath.trim()) {
+            codexArgs.push('-C', projectPath.trim());
+        }
+        codexArgs.push(cleanPromptText);
+
+        const codexProcess = spawn('codex', codexArgs, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env }
+        });
+
+        let fullOutput = '';
+        let hasError = false;
+        // 缓冲并在检测到 "User instructions:" 时一次性输出其之前的系统信息区块
+        let preambleBuffer = '';
+        let seenUserInstructions = false;
+        let emittedSystemHeader = false;
+        // 不再流式输出助理内容：仅输出系统头，其余等待最终结果
+        let headerEmitted = false;
+
+        codexProcess.stdout.on('data', (data) => {
+            const chunk = data.toString();
+            fullOutput += chunk;
+
+            // 1) 系统头：缓冲直到出现 User instructions
+            if (!seenUserInstructions) {
+                preambleBuffer += chunk;
+                const idx = preambleBuffer.indexOf('User instructions:');
+                if (idx !== -1 && !emittedSystemHeader) {
+                    // 截断到包含 "User instructions:" 的整行之前（不包含该行的时间戳等）
+                    const lineStart = preambleBuffer.lastIndexOf('\n', idx);
+                    const cutoff = lineStart >= 0 ? lineStart : idx;
+                    const before = preambleBuffer.slice(0, cutoff).trimEnd();
+                    if (before) {
+                        sendProgress(before, 'output');
+                    }
+                    emittedSystemHeader = true;
+                    seenUserInstructions = true;
+                }
+                return;
+            }
+
+            // 2) 已过 User instructions: 不再发送任何流式输出，等待进程结束后发送 final
+            headerEmitted = true;
+        });
+
+        codexProcess.stderr.on('data', (data) => {
+            const errorOutput = data.toString();
+            sendProgress(errorOutput, 'error');
+        });
+
+        codexProcess.on('error', (error) => {
+            hasError = true;
+            if (error.code === 'ENOENT') {
+                console.error('Codex CLI 未找到，请确保已安装');
+                sendProgress('Codex CLI 未找到，请安装 Codex CLI', 'error');
+            } else if (error.code === 'EPIPE') {
+                console.log('进程管道关闭 (EPIPE) - 这通常是正常的');
+            } else {
+                console.error('Codex 进程错误:', error);
+                sendProgress(`进程错误: ${error.message}`, 'error');
+            }
+        });
+
+        codexProcess.on('close', (code) => {
+            console.log(`Codex 进程结束，退出码: ${code}`);
+            if (code === 0 && !hasError) {
+                // 提取最终分析结果，仅在结束时输出
+                const finalResult = extractCodexAnswer(fullOutput);
+                sendProgress(finalResult, 'final');
+                sendProgress('分析完成', 'success');
+            } else {
+                const errorMsg = `进程异常退出，码: ${code}`;
+                console.error('Codex 执行错误:', errorMsg);
+                sendProgress(errorMsg, 'error');
+            }
+            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            res.end();
+        });
+
+    } catch (error) {
+        console.error('分析错误:', error);
+        sendProgress(`分析错误: ${error.message}`, 'error');
+        res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+        res.end();
+    }
+});
+
+// 保留原有的 /analyze-rule 端点以保持兼容性
 app.post('/analyze-rule', async (req, res) => {
     const { content, type } = req.body;
 
@@ -339,9 +576,9 @@ app.post('/analyze-rule', async (req, res) => {
         if (type === 'VIOLATED') {
             promptText = `分析以下CVL验证失败的trace，判断是否为假阳性(false positive)。
 重点关注：
-1. 检查initial state是否包含矛盾的变量设置，导致不可达的状态
+1. 检查initial state是否包含矛盾的变量设置，导致矛盾的状态
 2. 分析调用链是否符合实际业务逻辑
-3. 确认违规是真实bug还是由于不现实的初始状态
+3. 确认违规是真实bug还是由于相互矛盾的初始状态
 
 请提供简洁分析结果：
 
@@ -357,11 +594,12 @@ ${content}`;
 
         codexCommand = ['codex', 'exec', cleanPromptText];
 
-        // 分析阶段使用只读模式 + 高级推理
+        // 分析阶段使用只读模式 + 高级推理 + 详细推理总结
         const codexProcess = spawn('codex', [
-            'exec', 
+            'exec',
             '--sandbox', 'read-only',
             '-c', 'model_reasoning_effort=high',
+            '-c', 'model_reasoning_summary=detailed',
             cleanPromptText
         ], {
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -454,39 +692,25 @@ ${analysis}
 
         const promptText = `# CVL 验证失败修复任务
 
-## 环境和项目定位
-### 首要任务：切换工作目录
-1. **目标工作目录**：/Users/pixelpanda/Pinto/protocol/
-2. **目标文件**：/Users/pixelpanda/Pinto/protocol/certora/spec/field/Field.spec
-
-CRITICAL: 如果当前目录是 'certora-scraper'，你必须切换到实际的 Solidity 项目目录。不要在分析工具目录中操作！
-
 ## 任务概述
 根据以下 ${analyses.length} 个分析结论，依次修复发现的问题。每个结论都已用符号框明确标识和分离。
-
-CRITICAL: 必须在包含 .spec 和 .conf 文件的实际 Solidity 项目中执行修复，而不是在当前分析工具目录中。
 
 ## 分析结论
 ${formattedAnalyses.join('\n\n')}
 
 ## 修复执行步骤
 
-### 步骤1：项目环境准备
-- 使用上述搜索命令定位实际的 Solidity 项目
-- 切换到正确的项目目录
-- 确认存在目标文件（通常在 \`certora/spec/\` 或 \`protocol/certora/spec/\` 下）
-
-### 步骤2：逐一分析结论
+### 步骤1：逐一分析结论
 - 仔细阅读上述 ${analyses.length} 个结论
 - 识别每个结论中提到的具体问题
 
-### 步骤3：制定修复计划
+### 步骤2：制定修复计划
 - 列出需要修复的具体问题清单
 - 确定修复的优先级和顺序
-- 识别涉及的文件和代码位置
+- 识别涉及的spec文件和cvl代码位置
 
-### 步骤4：执行修复
-- **直接修改实际的 .spec 文件**（不是创建 patch）
+### 步骤3：执行修复
+- **直接修改实际的 .spec 文件/.conf文件**
 - 根据分析结论依次修复问题：
   - 修正 CVL 规范中的逻辑错误
   - 调整矛盾的初始条件或假设
@@ -494,25 +718,16 @@ ${formattedAnalyses.join('\n\n')}
 
 CRITICAL:尽量使用invariant来强化,消除初始状态的矛盾状态.非必要不使用require、assume等,这会掩盖一些场景.
 
-### 步骤5：语法检查与迭代修复
+### 步骤4：语法检查与迭代修复
 - 修复完成后，立即运行 \`certoraRun *.conf\` 命令检查spec语法
 - 如发现语法错误，自动修复语法问题
 - 重复运行 \`certoraRun *.conf\` 直到无语法错误
 - 确保所有修改的spec文件语法正确
 
-### 步骤6：最终验证
+### 步骤5：最终验证
 - 运行完整的 \`certoraRun *.conf\` 验证
 - 监控验证进度，等待完成,CERTORA CLI会提供完整的URL
 - **重要：如果验证成功提交，必须提供验证结果的URL**
-
-## 执行要求
-1. **项目定位优先**：必须先找到并切换到正确的项目目录
-2. **直接文件修改**：直接修改 spec 文件，不创建 patch
-3. **结构化输出**：对每个修复步骤提供清晰的说明
-4. **代码展示**：显示修改前后的代码对比
-5. **错误处理**：如遇到错误，说明具体原因和解决方案
-6. **URL反馈**：验证完成后，必须提供Certora验证结果URL
-7. **持续修复**：如果仍有验证失败，分析原因并继续修复
 
 请开始执行修复任务，严格按照上述步骤进行：`;
 
@@ -532,7 +747,7 @@ CRITICAL:尽量使用invariant来强化,消除初始状态的矛盾状态.非必
 
 // 修改后的 /fix-all-stream 端点用于流式批量修复
 app.post('/fix-all-stream', async (req, res) => {
-    const { prompt } = req.body;
+    const { prompt, projectPath } = req.body;
 
     if (!prompt || typeof prompt !== 'string') {
         return res.status(400).json({
@@ -542,6 +757,11 @@ app.post('/fix-all-stream', async (req, res) => {
     }
 
     console.log(`开始流式批量修复，prompt 长度: ${prompt.length}`);
+    if (projectPath) {
+        console.log(`指定项目路径: ${projectPath}`);
+    } else {
+        console.log('使用自动项目搜索');
+    }
 
     // 设置SSE响应头
     res.writeHead(200, {
@@ -562,13 +782,28 @@ app.post('/fix-all-stream', async (req, res) => {
         // 清理提示文本中的null字节
         const cleanPromptText = prompt.replace(/\0/g, '');
 
-        // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
-        const codexProcess = spawn('codex', [
-            'exec', 
+        // 构建 Codex 命令参数 + 高级推理 + 详细推理总结
+        const codexArgs = [
+            'exec',
             '--dangerously-bypass-approvals-and-sandbox',
             '-c', 'model_reasoning_effort=high',
-            cleanPromptText
-        ], {
+            '-c', 'model_reasoning_summary=detailed'
+        ];
+
+        // 如果用户指定了项目路径，添加 -C 参数
+        if (projectPath && projectPath.trim()) {
+            codexArgs.push('-C', projectPath.trim());
+            sendProgress(`设置工作目录: ${projectPath.trim()}`, 'info');
+        } else {
+            sendProgress('开始执行修复（使用自动项目搜索）...', 'info');
+        }
+
+        codexArgs.push(cleanPromptText);
+
+        console.log('Codex 命令参数:', codexArgs.slice(0, -1)); // 不打印完整 prompt
+
+        // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
+        const codexProcess = spawn('codex', codexArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
@@ -648,9 +883,10 @@ ${combinedAnalysis}
 
         // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
         const codexProcess = spawn('codex', [
-            'exec', 
+            'exec',
             '--dangerously-bypass-approvals-and-sandbox',
             '-c', 'model_reasoning_effort=high',
+            '-c', 'model_reasoning_summary=detailed',
             cleanPromptText
         ], {
             stdio: ['pipe', 'pipe', 'pipe'],
