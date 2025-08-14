@@ -449,50 +449,65 @@ ${analysis}
 
         const promptText = `# CVL 验证失败修复任务
 
+## 环境和项目定位
+### 首要任务：切换工作目录
+1. **目标工作目录**：/Users/pixelpanda/Pinto/protocol/
+2. **目标文件**：/Users/pixelpanda/Pinto/protocol/certora/spec/field/Field.spec
+
+CRITICAL: 如果当前目录是 'certora-scraper'，你必须切换到实际的 Solidity 项目目录。不要在分析工具目录中操作！
+
 ## 任务概述
 根据以下 ${analyses.length} 个分析结论，依次修复发现的问题。每个结论都已用符号框明确标识和分离。
+
+CRITICAL: 必须在包含 .spec 和 .conf 文件的实际 Solidity 项目中执行修复，而不是在当前分析工具目录中。
 
 ## 分析结论
 ${formattedAnalyses.join('\n\n')}
 
 ## 修复执行步骤
 
-### 步骤1：逐一分析结论
+### 步骤1：项目环境准备
+- 使用上述搜索命令定位实际的 Solidity 项目
+- 切换到正确的项目目录
+- 确认存在目标文件（通常在 \`certora/spec/\` 或 \`protocol/certora/spec/\` 下）
+
+### 步骤2：逐一分析结论
 - 仔细阅读上述 ${analyses.length} 个结论
 - 识别每个结论中提到的具体问题
 
-### 步骤2：制定修复计划
+### 步骤3：制定修复计划
 - 列出需要修复的具体问题清单
 - 确定修复的优先级和顺序
 - 识别涉及的文件和代码位置
 
-### 步骤3：执行修复
+### 步骤4：执行修复
+- **直接修改实际的 .spec 文件**（不是创建 patch）
 - 根据分析结论依次修复问题：
   - 修正 CVL 规范中的逻辑错误
   - 调整矛盾的初始条件或假设
   - 完善规范覆盖度和边界条件处理
 
 CRITICAL:尽量使用invariant来强化,消除初始状态的矛盾状态.非必要不使用require、assume等,这会掩盖一些场景.
-CRITICAL:尽量使用invariant来强化,消除初始状态的矛盾状态.非必要不使用require、assume等,这会掩盖一些场景.
-CRITICAL:尽量使用invariant来强化,消除初始状态的矛盾状态.非必要不使用require、assume等,这会掩盖一些场景.
 
-### 步骤4：语法检查与迭代修复
-- 修复完成后，立即运行 \`certoraRun {.conf}\` 命令检查spec语法
+### 步骤5：语法检查与迭代修复
+- 修复完成后，立即运行 \`certoraRun *.conf\` 命令检查spec语法
 - 如发现语法错误，自动修复语法问题
-- 重复运行 \`certoraRun {.conf}\` 直到无语法错误
+- 重复运行 \`certoraRun *.conf\` 直到无语法错误
 - 确保所有修改的spec文件语法正确
 
-### 步骤5：最终验证
-- 运行完整的 \`certoraRun {.conf}\` 验证
+### 步骤6：最终验证
+- 运行完整的 \`certoraRun *.conf\` 验证
 - 监控验证进度，等待完成,CERTORA CLI会提供完整的URL
 - **重要：如果验证成功提交，必须提供验证结果的URL**
 
 ## 执行要求
-1. **结构化输出**：对每个修复步骤提供清晰的说明
-2. **代码展示**：显示修改前后的代码对比
-3. **错误处理**：如遇到错误，说明具体原因和解决方案
-4. **URL反馈**：验证完成后，必须提供Certora验证结果URL
-5. **持续修复**：如果仍有验证失败，分析原因并继续修复
+1. **项目定位优先**：必须先找到并切换到正确的项目目录
+2. **直接文件修改**：直接修改 spec 文件，不创建 patch
+3. **结构化输出**：对每个修复步骤提供清晰的说明
+4. **代码展示**：显示修改前后的代码对比
+5. **错误处理**：如遇到错误，说明具体原因和解决方案
+6. **URL反馈**：验证完成后，必须提供Certora验证结果URL
+7. **持续修复**：如果仍有验证失败，分析原因并继续修复
 
 请开始执行修复任务，严格按照上述步骤进行：`;
 
@@ -542,10 +557,8 @@ app.post('/fix-all-stream', async (req, res) => {
         // 清理提示文本中的null字节
         const cleanPromptText = prompt.replace(/\0/g, '');
 
-        sendProgress('开始执行修复...', 'info');
-
-        // 修复阶段使用full-auto模式（允许写文件和执行命令）
-        const codexProcess = spawn('codex', ['exec', '--full-auto', cleanPromptText], {
+        // 修复阶段使用危险模式（允许完全访问和执行命令）
+        const codexProcess = spawn('codex', ['exec', '--dangerously-bypass-approvals-and-sandbox', cleanPromptText], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
@@ -623,8 +636,8 @@ ${combinedAnalysis}
         // 清理提示文本中的null字节
         const cleanPromptText = promptText.replace(/\0/g, '');
 
-        // 修复阶段使用full-auto模式（允许写文件和执行命令）
-        const codexProcess = spawn('codex', ['exec', '--full-auto', cleanPromptText], {
+        // 修复阶段使用危险模式（允许完全访问和执行命令）
+        const codexProcess = spawn('codex', ['exec', '--dangerously-bypass-approvals-and-sandbox', cleanPromptText], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
