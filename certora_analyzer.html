@@ -414,6 +414,121 @@
             transform: scale(1.05);
             background: rgba(19, 132, 150, 0.95);
         }
+
+        /* 新增样式：修复 prompt 预览界面 */
+        .fix-prompt-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+
+        .fix-prompt-modal-content {
+            position: relative;
+            background: white;
+            margin: 30px auto;
+            padding: 20px;
+            width: 90%;
+            max-width: 1200px;
+            max-height: 85vh;
+            overflow-y: auto;
+            border-radius: 10px;
+        }
+
+        .fix-prompt-editor {
+            width: 100%;
+            min-height: 400px;
+            padding: 15px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            resize: vertical;
+            margin-bottom: 20px;
+        }
+
+        .fix-prompt-editor:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .fix-prompt-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+
+        .fix-output-area {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .fix-output-content {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+        }
+
+        .verification-url {
+            margin-top: 15px;
+            padding: 15px;
+            background: #d4edda;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .verification-url a {
+            color: #155724;
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .verification-url a:hover {
+            text-decoration: underline;
+        }
+
+        .fix-status {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .fix-status.info {
+            background: #cfe2ff;
+            color: #084298;
+            border: 1px solid #b6d4fe;
+        }
+
+        .fix-status.success {
+            background: #d1e7dd;
+            color: #0f5132;
+            border: 1px solid #badbcc;
+        }
+
+        .fix-status.error {
+            background: #f8d7da;
+            color: #842029;
+            border: 1px solid #f5c2c7;
+        }
     </style>
 </head>
 
@@ -483,6 +598,41 @@
             <span class="close-modal" onclick="closeCodexModal()">&times;</span>
             <h3 id="codex-modal-title" style="margin-bottom: 20px;">Codex 分析详情</h3>
             <div id="codex-modal-content" class="codex-content"></div>
+        </div>
+    </div>
+
+    <!-- Fix Prompt Modal -->
+    <div id="fix-prompt-modal" class="fix-prompt-modal">
+        <div class="fix-prompt-modal-content">
+            <span class="close-modal" onclick="closeFixPromptModal()">&times;</span>
+            <h3 style="margin-bottom: 20px;">📝 修复任务预览与编辑</h3>
+            
+            <div style="margin-bottom: 15px;">
+                <label for="fix-prompt-editor" style="font-weight: 600; color: #495057;">修复 Prompt（可编辑）：</label>
+            </div>
+            
+            <textarea id="fix-prompt-editor" class="fix-prompt-editor" 
+                      placeholder="正在生成修复 prompt..."></textarea>
+            
+            <div class="fix-prompt-buttons">
+                <button class="btn btn-danger" onclick="closeFixPromptModal()">
+                    ❌ 取消
+                </button>
+                <button class="btn btn-success" id="execute-fix-btn" onclick="executeFixWithPrompt()">
+                    🚀 开始执行修复
+                </button>
+            </div>
+
+            <!-- 修复执行输出区域 -->
+            <div id="fix-output-area" class="fix-output-area">
+                <h4 style="margin-bottom: 15px;">🔧 修复执行过程</h4>
+                <div id="fix-status"></div>
+                <div id="fix-output-content" class="fix-output-content"></div>
+                <div id="verification-url" class="verification-url">
+                    <strong>🎉 验证完成！</strong><br>
+                    查看验证结果：<a id="verification-link" href="#" target="_blank"></a>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1004,10 +1154,11 @@
                 return;
             }
 
-            showStatus(`正在执行修复（共 ${analyses.length} 个任务）...`, 'info');
+            showStatus(`正在生成修复 prompt（共 ${analyses.length} 个分析结果）...`, 'info');
 
             try {
-                const response = await fetch('http://localhost:3002/fix-all', {
+                // 第一步：生成 prompt
+                const response = await fetch('http://localhost:3002/generate-fix-prompt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ analyses })
@@ -1015,20 +1166,128 @@
 
                 const result = await response.json();
                 if (result.success) {
-                    if (result.url) {
-                        document.getElementById('prover-link').href = result.url;
-                        document.getElementById('prover-link').textContent = result.url;
-                        document.getElementById('prover-url').style.display = 'block';
-                        showStatus('✅ 修复完成，验证已启动', 'success');
-                    } else {
-                        showStatus(result.message || '修复完成', 'success');
-                    }
+                    // 显示 prompt 预览模态框
+                    document.getElementById('fix-prompt-editor').value = result.prompt;
+                    document.getElementById('fix-prompt-modal').style.display = 'block';
+                    showStatus('修复 prompt 已生成，请预览并编辑后点击执行', 'success');
                 } else {
-                    showStatus(`修复失败: ${result.error}`, 'error');
+                    showStatus(`生成 prompt 失败: ${result.error}`, 'error');
                 }
             } catch (error) {
                 showStatus(`错误: ${error.message}`, 'error');
             }
+        }
+
+        function closeFixPromptModal() {
+            document.getElementById('fix-prompt-modal').style.display = 'none';
+            // 重置输出区域
+            document.getElementById('fix-output-area').style.display = 'none';
+            document.getElementById('fix-output-content').textContent = '';
+            document.getElementById('verification-url').style.display = 'none';
+        }
+
+        async function executeFixWithPrompt() {
+            const prompt = document.getElementById('fix-prompt-editor').value.trim();
+            
+            if (!prompt) {
+                showFixStatus('请输入修复 prompt', 'error');
+                return;
+            }
+
+            // 显示输出区域并开始执行
+            document.getElementById('fix-output-area').style.display = 'block';
+            document.getElementById('execute-fix-btn').disabled = true;
+            document.getElementById('execute-fix-btn').textContent = '🔄 执行中...';
+            
+            showFixStatus('正在执行修复任务...', 'info');
+
+            try {
+                // 使用流式端点执行修复
+                const eventSource = new EventSource('http://localhost:3002/fix-all-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+
+                // 由于 EventSource 不支持 POST，使用 fetch 替代
+                const response = await fetch('http://localhost:3002/fix-all-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // 保留不完整的行
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                handleFixStreamData(data);
+                            } catch (e) {
+                                console.error('解析SSE数据错误:', e, line);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('修复执行错误:', error);
+                showFixStatus(`执行错误: ${error.message}`, 'error');
+                document.getElementById('execute-fix-btn').disabled = false;
+                document.getElementById('execute-fix-btn').textContent = '🚀 开始执行修复';
+            }
+        }
+
+        function handleFixStreamData(data) {
+            const outputContent = document.getElementById('fix-output-content');
+            
+            switch (data.type) {
+                case 'info':
+                    showFixStatus(data.message, 'info');
+                    break;
+                case 'output':
+                    outputContent.textContent += data.message;
+                    outputContent.scrollTop = outputContent.scrollHeight;
+                    break;
+                case 'error':
+                    outputContent.textContent += `[ERROR] ${data.message}`;
+                    outputContent.scrollTop = outputContent.scrollHeight;
+                    showFixStatus('执行过程中出现错误', 'error');
+                    break;
+                case 'url':
+                    // 显示验证URL
+                    document.getElementById('verification-link').href = data.message;
+                    document.getElementById('verification-link').textContent = data.message;
+                    document.getElementById('verification-url').style.display = 'block';
+                    break;
+                case 'success':
+                    showFixStatus(data.message, 'success');
+                    break;
+                case 'complete':
+                    document.getElementById('execute-fix-btn').disabled = false;
+                    document.getElementById('execute-fix-btn').textContent = '🚀 开始执行修复';
+                    showFixStatus('修复任务执行完成', 'success');
+                    break;
+            }
+        }
+
+        function showFixStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('fix-status');
+            statusDiv.className = `fix-status ${type}`;
+            statusDiv.textContent = message;
         }
 
         function showStatus(message, type = 'info') {
@@ -1473,11 +1732,15 @@
         window.onclick = function (event) {
             const modal1 = document.getElementById('markdown-modal');
             const modal2 = document.getElementById('codex-modal');
+            const modal3 = document.getElementById('fix-prompt-modal');
             if (event.target == modal1) {
                 modal1.style.display = 'none';
             }
             if (event.target == modal2) {
                 modal2.style.display = 'none';
+            }
+            if (event.target == modal3) {
+                closeFixPromptModal();
             }
         }
     </script>
