@@ -646,20 +646,6 @@
             <textarea id="fix-prompt-editor" class="fix-prompt-editor" 
                       placeholder="正在生成修复 prompt..."></textarea>
             
-            <div style="margin-bottom: 20px;">
-                <label for="project-path" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
-                    🗂️ Solidity 项目路径（可选）：
-                </label>
-                <input type="text" id="project-path" 
-                       placeholder="/Users/pixelpanda/Pinto/protocol/" 
-                       value="/Users/pixelpanda/Pinto/protocol/"
-                       style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
-                              font-family: 'Courier New', monospace; font-size: 14px;">
-                <small style="color: #6c757d; display: block; margin-top: 5px;">
-                    💡 如果指定路径，Codex 将直接在该目录中工作，跳过项目搜索步骤。留空则使用自动搜索。
-                </small>
-            </div>
-            
             <div class="fix-prompt-buttons">
                 <button class="btn btn-danger" onclick="closeFixPromptModal()">
                     ❌ 取消
@@ -1271,9 +1257,11 @@
         async function fixAll() {
             const analyses = [];
 
-            document.querySelectorAll('.codex-analysis').forEach(textarea => {
-                if (textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
-                    analyses.push(textarea.value);
+            // 将分析结果与对应规则名配对
+            processedRules.forEach(rule => {
+                const ta = document.getElementById(`analysis-${rule.outputFile}`);
+                if (ta && ta.value && ta.value !== '' && !ta.value.includes('分析中...')) {
+                    analyses.push({ text: ta.value, ruleName: rule.displayName });
                 }
             });
 
@@ -1316,10 +1304,7 @@
 
         async function executeFixWithPrompt() {
             const prompt = document.getElementById('fix-prompt-editor').value.trim();
-            let projectPath = (document.getElementById('project-path-main')?.value || '').trim();
-            if (!projectPath) {
-                projectPath = (document.getElementById('project-path')?.value || '').trim();
-            }
+            const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
             
             if (!prompt) {
                 showFixStatus('请输入修复 prompt', 'error');

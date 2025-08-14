@@ -362,35 +362,36 @@ app.post('/analyze-and-fetch', async (req, res) => {
 
         console.log(`找到 ${sortedRules.length} 个非verified规则，正在并发获取JSON内容...`);
 
-        // 并发获取所有JSON文件的内容
-        const fetchPromises = sortedRules.map(async (rule) => {
-            try {
-                console.log(`获取 ${rule.outputFile}...`);
-                const response = await fetch(rule.url);
-                if (response.ok) {
-                    const jsonContent = await response.json();
-                    return {
-                        ...rule,
-                        content: jsonContent
-                    };
-                } else {
-                    return {
-                        ...rule,
-                        content: null,
-                        error: `HTTP ${response.status}`
-                    };
+        // 带重试的获取函数：直至成功
+        const fetchJsonWithRetry = async (rule, delayMs = 2000) => {
+            let attempt = 0;
+            // 无限重试直到成功
+            // 注意：为防止过快重试，增加固定等待
+            while (true) {
+                attempt++;
+                try {
+                    console.log(`获取 ${rule.outputFile} (尝试 ${attempt})...`);
+                    const response = await fetch(rule.url);
+                    if (!response.ok) {
+                        console.warn(`HTTP ${response.status} 获取 ${rule.outputFile} 失败，重试中...`);
+                    } else {
+                        const jsonContent = await response.json();
+                        // 简单校验
+                        if (jsonContent && typeof jsonContent === 'object') {
+                            return { ...rule, content: jsonContent };
+                        }
+                        console.warn(`解析 ${rule.outputFile} JSON 失败，重试中...`);
+                    }
+                } catch (e) {
+                    console.warn(`获取 ${rule.outputFile} 出错: ${e.message}，重试中...`);
                 }
-            } catch (error) {
-                console.error(`获取 ${rule.outputFile} 失败:`, error.message);
-                return {
-                    ...rule,
-                    content: null,
-                    error: error.message
-                };
+                // 等待后重试
+                await new Promise(r => setTimeout(r, delayMs));
             }
-        });
+        };
 
-        const rulesWithContent = await Promise.all(fetchPromises);
+        // 并发获取所有JSON文件的内容（每个都有自身的无限重试）
+        const rulesWithContent = await Promise.all(sortedRules.map(rule => fetchJsonWithRetry(rule)));
 
         // 返回完整结果
         res.json({
@@ -675,15 +676,27 @@ app.post('/generate-fix-prompt', async (req, res) => {
     console.log(`生成修复 prompt，共 ${analyses.length} 个分析结果`);
 
     try {
-        const combinedAnalysis = analyses.join('\n\n---\n\n');
+        // 标准化输入：支持字符串数组或对象数组 { text, ruleName }
+        const items = analyses.map((a) => {
+            if (a && typeof a === 'object') {
+                // 兼容不同字段名
+                const text = a.text ?? a.analysis ?? '';
+                const ruleName = a.ruleName ?? a.name ?? a.rule ?? '';
+                return { text: String(text || ''), ruleName: String(ruleName || '') };
+            }
+            return { text: String(a || ''), ruleName: '' };
+        });
 
-        // 分离和格式化分析结果
-        const formattedAnalyses = analyses.map((analysis, index) => {
+        // 分离和格式化分析结果（在结论头部加入规则名）
+        const formattedAnalyses = items.map((item, index) => {
+            const headerTitle = item.ruleName
+                ? `分析结论 ${index + 1} · 规则：${item.ruleName}`
+                : `分析结论 ${index + 1}`;
             return `╔═══════════════════════════════════════════════════════════════════════════════════╗
-║                                   分析结论 ${index + 1}                                    ║
+║ ${headerTitle}
 ╚═══════════════════════════════════════════════════════════════════════════════════╝
 
-${analysis}
+${item.text}
 
 ╔═══════════════════════════════════════════════════════════════════════════════════╗
 ║                                 分析结论 ${index + 1} 结束                                ║
@@ -693,7 +706,7 @@ ${analysis}
         const promptText = `# CVL 验证失败修复任务
 
 ## 任务概述
-根据以下 ${analyses.length} 个分析结论，依次修复发现的问题。每个结论都已用符号框明确标识和分离。
+根据以下 ${analyses.length} 个分析结论，依次修复发现的问题。每个结论都已用符号框明确标识和分离（头部包含对应规则名）。
 
 ## 分析结论
 ${formattedAnalyses.join('\n\n')}
