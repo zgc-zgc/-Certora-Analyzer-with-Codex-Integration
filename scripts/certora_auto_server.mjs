@@ -59,7 +59,7 @@ function filterCodexOutput(output) {
     const filteredLines = [];
     let inSystemInfo = true;
     let inPromptSection = false;
-    
+
     for (const line of lines) {
         // 系统信息阶段 - 保留到 "User instructions:" 之前的所有内容
         if (inSystemInfo) {
@@ -72,7 +72,7 @@ function filterCodexOutput(output) {
             filteredLines.push(line);
             continue;
         }
-        
+
         // 检测prompt结束，开始实际分析
         if (inPromptSection) {
             // 检测prompt结束（通常是开始实际分析的地方）
@@ -83,17 +83,17 @@ function filterCodexOutput(output) {
             // 在prompt阶段，跳过所有内容
             continue;
         }
-        
+
         // 跳过其他系统信息行（如tokens used等）
-        if (line.includes('[') && line.includes(']') && 
+        if (line.includes('[') && line.includes(']') &&
             (line.includes('codex') || line.includes('tokens used'))) {
             continue;
         }
-        
+
         // 保留实际的分析内容
         filteredLines.push(line);
     }
-    
+
     return filteredLines.join('\n');
 }
 
@@ -450,7 +450,7 @@ app.post('/analyze-rule-stream', async (req, res) => {
 
 ${content}`;
         } else if (type === 'SANITY_FAILED') {
-            promptText = `分析以下汇总的CVL sanity failed规则信息，找出共同的失败原因和修复建议：
+            promptText = `分析以下汇总的CVL sanity failed规则信息，找出失败原因和修复建议：
 
 ${content}`;
         }
@@ -557,110 +557,6 @@ ${content}`;
     }
 });
 
-// 保留原有的 /analyze-rule 端点以保持兼容性
-app.post('/analyze-rule', async (req, res) => {
-    const { content, type } = req.body;
-
-    if (!content || !type) {
-        return res.status(400).json({
-            success: false,
-            error: '缺少必需参数: content 和 type'
-        });
-    }
-
-    console.log(`开始分析规则类型: ${type}, 内容长度: ${content.length}`);
-
-    try {
-        const { spawn } = await import('child_process');
-        let codexCommand, promptText;
-
-        if (type === 'VIOLATED') {
-            promptText = `分析以下CVL验证失败的trace，判断是否为假阳性(false positive)。
-重点关注：
-1. 检查initial state是否包含矛盾的变量设置，导致矛盾的状态
-2. 分析调用链是否符合实际业务逻辑
-3. 确认违规是真实bug还是由于相互矛盾的初始状态
-
-请提供简洁分析结果：
-
-${content}`;
-        } else if (type === 'SANITY_FAILED') {
-            promptText = `分析以下汇总的CVL sanity failed规则信息，找出共同的失败原因和修复建议：
-
-${content}`;
-        }
-
-        // 清理提示文本中的null字节
-        const cleanPromptText = promptText.replace(/\0/g, '');
-
-        codexCommand = ['codex', 'exec', cleanPromptText];
-
-        // 分析阶段使用只读模式 + 高级推理 + 详细推理总结
-        const codexProcess = spawn('codex', [
-            'exec',
-            '--sandbox', 'read-only',
-            '-c', 'model_reasoning_effort=high',
-            '-c', 'model_reasoning_summary=detailed',
-            cleanPromptText
-        ], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env }
-        });
-
-        let output = '';
-        let errorOutput = '';
-
-        codexProcess.stdout.on('data', (data) => {
-            output += data.toString();
-        });
-
-        codexProcess.stderr.on('data', (data) => {
-            errorOutput += data.toString();
-        });
-
-        codexProcess.on('error', (error) => {
-            if (error.code === 'ENOENT') {
-                console.error('Codex CLI 未找到，请确保已安装');
-                res.json({
-                    success: false,
-                    error: 'Codex CLI 未找到，请安装 Codex CLI'
-                });
-            } else if (error.code === 'EPIPE') {
-                console.log('进程管道关闭 (EPIPE) - 这通常是正常的');
-            } else {
-                console.error('Codex 进程错误:', error);
-                res.json({
-                    success: false,
-                    error: `进程错误: ${error.message}`
-                });
-            }
-        });
-
-        codexProcess.on('close', (code) => {
-            console.log(`Codex 进程结束，退出码: ${code}`);
-            if (code === 0) {
-                res.json({
-                    success: true,
-                    analysis: output
-                });
-            } else {
-                const errorMsg = errorOutput || `进程异常退出，码: ${code}`;
-                console.error('Codex 执行错误:', errorMsg);
-                res.json({
-                    success: false,
-                    error: errorMsg
-                });
-            }
-        });
-
-    } catch (error) {
-        console.error('分析错误:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
 
 // 新增 /generate-fix-prompt 端点用于生成修复 prompt
 app.post('/generate-fix-prompt', async (req, res) => {
