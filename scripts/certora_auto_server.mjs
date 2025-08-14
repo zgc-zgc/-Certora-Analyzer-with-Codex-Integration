@@ -357,8 +357,13 @@ ${content}`;
 
         codexCommand = ['codex', 'exec', cleanPromptText];
 
-        // 分析阶段使用只读模式
-        const codexProcess = spawn('codex', ['exec', '--sandbox', 'read-only', cleanPromptText], {
+        // 分析阶段使用只读模式 + 高级推理
+        const codexProcess = spawn('codex', [
+            'exec', 
+            '--sandbox', 'read-only',
+            '-c', 'model_reasoning_effort=high',
+            cleanPromptText
+        ], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
@@ -557,8 +562,13 @@ app.post('/fix-all-stream', async (req, res) => {
         // 清理提示文本中的null字节
         const cleanPromptText = prompt.replace(/\0/g, '');
 
-        // 修复阶段使用危险模式（允许完全访问和执行命令）
-        const codexProcess = spawn('codex', ['exec', '--dangerously-bypass-approvals-and-sandbox', cleanPromptText], {
+        // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
+        const codexProcess = spawn('codex', [
+            'exec', 
+            '--dangerously-bypass-approvals-and-sandbox',
+            '-c', 'model_reasoning_effort=high',
+            cleanPromptText
+        ], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
@@ -636,8 +646,13 @@ ${combinedAnalysis}
         // 清理提示文本中的null字节
         const cleanPromptText = promptText.replace(/\0/g, '');
 
-        // 修复阶段使用危险模式（允许完全访问和执行命令）
-        const codexProcess = spawn('codex', ['exec', '--dangerously-bypass-approvals-and-sandbox', cleanPromptText], {
+        // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
+        const codexProcess = spawn('codex', [
+            'exec', 
+            '--dangerously-bypass-approvals-and-sandbox',
+            '-c', 'model_reasoning_effort=high',
+            cleanPromptText
+        ], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
