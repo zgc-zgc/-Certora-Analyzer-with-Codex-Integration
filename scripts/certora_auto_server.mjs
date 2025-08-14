@@ -352,10 +352,13 @@ ${content}`;
 ${content}`;
         }
         
-        codexCommand = ['codex', 'exec', promptText];
+        // 清理提示文本中的null字节
+        const cleanPromptText = promptText.replace(/\0/g, '');
+        
+        codexCommand = ['codex', 'exec', cleanPromptText];
         
         // 分析阶段使用只读模式
-        const codexProcess = spawn('codex', ['exec', '--sandbox', 'read-only', promptText], {
+        const codexProcess = spawn('codex', ['exec', '--sandbox', 'read-only', cleanPromptText], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
@@ -438,8 +441,11 @@ ${combinedAnalysis}
 
 请提供具体的修复步骤和代码建议。`;
         
+        // 清理提示文本中的null字节
+        const cleanPromptText = promptText.replace(/\0/g, '');
+        
         // 修复阶段使用full-auto模式（允许写文件和执行命令）
-        const codexProcess = spawn('codex', ['exec', '--full-auto', promptText], {
+        const codexProcess = spawn('codex', ['exec', '--full-auto', cleanPromptText], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -307,8 +308,13 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         .copy-notification {
@@ -359,7 +365,7 @@
         .copy-btn:active {
             transform: translateY(0);
         }
-        
+
         .view-btn {
             background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
             color: white;
@@ -410,6 +416,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
@@ -420,12 +427,9 @@
         <div class="content">
             <div class="input-section">
                 <h3 style="margin-bottom: 20px; color: #212529;">输入 Certora URL</h3>
-                <input type="text" 
-                       class="url-input" 
-                       id="certora-url" 
-                       placeholder="https://prover.certora.com/output/..."
-                       value="">
-                
+                <input type="text" class="url-input" id="certora-url"
+                    placeholder="https://prover.certora.com/output/..." value="">
+
                 <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
                     🔍 获取验证数据
                 </button>
@@ -434,11 +438,8 @@
             </div>
 
             <div id="action-buttons" class="action-buttons" style="display: none;">
-                <button class="btn btn-success" onclick="analyzeAllRules()">
+                <button class="btn btn-success" id="batchAnalyzeBtn" onclick="toggleBatchAnalysis()">
                     🤖 Codex 分析所有规则
-                </button>
-                <button class="btn btn-danger" id="stopAnalysisBtn" onclick="stopAnalysis()" style="display: none;">
-                    ⏹️ 停止分析
                 </button>
                 <button class="btn btn-warning" onclick="fixAll()">
                     🔧 执行批量修复
@@ -452,7 +453,7 @@
                             <th style="width: 25%;">规则名</th>
                             <th style="width: 10%;">状态</th>
                             <th style="width: 10%;">Markdown</th>
-                            <th style="width: 40%;">Codex分析（可编辑）</th>
+                            <th style="width: 40%;">Codex分析结果</th>
                             <th style="width: 15%;">操作</th>
                         </tr>
                     </thead>
@@ -499,7 +500,7 @@
             const lines = fullOutput.split('\n');
             let lastTimeIndex = -1;
             let tokensUsedIndex = -1;
-            
+
             // 查找最后一个时间戳标记，格式如 [2025-01-01T10:30:00]
             for (let i = lines.length - 1; i >= 0; i--) {
                 if (lines[i].includes('tokens used:')) {
@@ -510,19 +511,19 @@
                     break;
                 }
             }
-            
+
             if (lastTimeIndex >= 0 && tokensUsedIndex > lastTimeIndex) {
                 // 提取最后一个时间戳后到 tokens used 之前的内容
                 const answerLines = lines.slice(lastTimeIndex + 1, tokensUsedIndex);
                 let answer = answerLines.join('\n').trim();
-                
+
                 // 移除可能的额外标记
                 answer = answer.replace(/^(Assistant|AI|Codex):\s*/gm, '');
                 answer = answer.replace(/^\s*[-•]\s*/gm, '');
-                
+
                 return answer || fullOutput;
             }
-            
+
             // 如果没找到时间戳，尝试查找 "codex" 标记
             let lastCodexIndex = -1;
             for (let i = 0; i < lines.length; i++) {
@@ -534,12 +535,12 @@
                     break;
                 }
             }
-            
+
             if (lastCodexIndex >= 0 && tokensUsedIndex > lastCodexIndex) {
                 const answerLines = lines.slice(lastCodexIndex + 1, tokensUsedIndex);
                 return answerLines.join('\n').trim();
             }
-            
+
             // 如果都没找到，返回原内容
             return fullOutput;
         }
@@ -554,7 +555,7 @@
             const btn = document.getElementById('analyzeBtn');
             btn.disabled = true;
             btn.textContent = '⏳ 获取中...';
-            
+
             showStatus('正在获取验证数据...', 'info');
 
             try {
@@ -574,7 +575,7 @@
 
                 const data = await response.json();
                 allRulesData = data;
-                
+
                 // 保存所有JSON内容
                 data.rules.forEach(rule => {
                     if (rule.content) {
@@ -584,7 +585,7 @@
 
                 processData(data);
                 showStatus(`✅ 成功获取 ${data.rules.length} 个规则的数据`, 'success');
-                
+
             } catch (error) {
                 console.error('Error:', error);
                 showStatus(`错误: ${error.message}。请确保运行了: node scripts/certora_auto_server.mjs`, 'error');
@@ -596,7 +597,7 @@
 
         function processData(data) {
             processedRules = [];
-            
+
             // 处理 VIOLATED 规则
             data.rules.filter(r => r.status === 'VIOLATED').forEach(rule => {
                 const markdown = rule.content ? convertToMarkdown(rule) : '';
@@ -607,7 +608,7 @@
                     displayName: rule.ruleName
                 });
             });
-            
+
             // 整合 SANITY_FAILED 规则
             const sanityFailed = data.rules.filter(r => r.status === 'SANITY_FAILED');
             if (sanityFailed.length > 0) {
@@ -621,26 +622,26 @@
                     outputFile: 'sanity_aggregated'
                 });
             }
-            
+
             displayResults();
             document.getElementById('action-buttons').style.display = 'flex';
         }
 
         function aggregateSanityFailures(rules) {
             const sanityMap = new Map();
-            
+
             rules.forEach(rule => {
                 const parts = rule.ruleName.split(' > ');
                 const baseRule = parts[0];
                 const funcName = parts[parts.length - 1];
-                
+
                 if (!sanityMap.has(baseRule)) {
                     sanityMap.set(baseRule, new Set());
                 }
                 sanityMap.get(baseRule).add(funcName);
             });
-            
-            return Array.from(sanityMap.entries()).map(([rule, funcs]) => 
+
+            return Array.from(sanityMap.entries()).map(([rule, funcs]) =>
                 `规则 ${rule} 在以下函数中 sanity failed:\n${Array.from(funcs).map(f => `- ${f}`).join('\n')}`
             ).join('\n\n');
         }
@@ -648,7 +649,7 @@
         function displayResults() {
             const tbody = document.getElementById('result-tbody');
             tbody.innerHTML = '';
-            
+
             processedRules.forEach((rule, index) => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
@@ -690,7 +691,7 @@
                 `;
                 tbody.appendChild(row);
             });
-            
+
             document.getElementById('result-section').style.display = 'block';
         }
 
@@ -726,52 +727,58 @@
             document.getElementById('markdown-modal').style.display = 'none';
         }
 
-        async function analyzeRule(index, isBatchAnalysis = false) {
+        async function analyzeRule(index, isBatchAnalysis = false, retryCount = 0) {
+            const maxRetries = 3;
+            
             // 只有在批量分析时才检查 stopAnalysisFlag
             if (isBatchAnalysis && stopAnalysisFlag) {
                 console.log('批量分析被停止标志阻止');
                 return;
             }
-            
+
             const rule = processedRules[index];
             if (!rule) {
                 console.error(`规则索引 ${index} 不存在`);
                 return;
             }
-            
+
             const outputFile = rule.outputFile;
-            
-            console.log(`开始分析规则: ${outputFile}, 批量分析: ${isBatchAnalysis}`);
+
+            console.log(`开始分析规则: ${outputFile}, 批量分析: ${isBatchAnalysis}, 重试次数: ${retryCount}`);
             console.log(`规则类型: ${rule.type}, Markdown长度: ${rule.markdown ? rule.markdown.length : 0}`);
-            
+
             const textarea = document.getElementById(`analysis-${outputFile}`);
             const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
             const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
-            
+
             if (!textarea || !analyzeBtn) {
                 console.error(`找不到UI元素: textarea=${!!textarea}, analyzeBtn=${!!analyzeBtn}`);
                 return;
             }
-            
+
             // 如果这个规则已经在分析中，不重复分析
             if (analysisControllers.has(outputFile)) {
                 console.log(`规则 ${outputFile} 已在分析中，跳过`);
                 return;
             }
-            
+
             // 显示停止按钮，隐藏分析按钮
             if (analyzeBtn) analyzeBtn.style.display = 'none';
             if (stopBtn) stopBtn.style.display = 'inline-block';
-            
-            textarea.value = '分析中...';
+
+            if (retryCount > 0) {
+                textarea.value = `重试中... (${retryCount}/${maxRetries})`;
+            } else {
+                textarea.value = '分析中...';
+            }
             textarea.disabled = true;
-            
+
             // 为这个特定的分析创建 AbortController
             const controller = new AbortController();
             analysisControllers.set(outputFile, controller);
-            
+
             console.log(`创建了控制器，当前控制器数量: ${analysisControllers.size}`);
-            
+
             // 检查控制器是否立即被中止
             if (controller.signal.aborted) {
                 console.error('控制器创建后立即被中止！');
@@ -781,36 +788,46 @@
                 if (stopBtn) stopBtn.style.display = 'none';
                 return;
             }
-            
+
             try {
                 console.log(`发送分析请求: ${rule.type}, Markdown前100字符: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
-                
+
                 // 确保 markdown 存在
                 if (!rule.markdown) {
                     throw new Error('Markdown内容为空');
                 }
-                
-                const requestBody = { 
-                    content: rule.markdown, 
-                    type: rule.type 
+
+                const requestBody = {
+                    content: rule.markdown,
+                    type: rule.type
                 };
-                
+
                 console.log(`请求体大小: ${JSON.stringify(requestBody).length} 字节`);
-                
+
                 const response = await fetch('http://localhost:3002/analyze-rule', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(requestBody),
                     signal: controller.signal
                 });
-                
+
                 console.log(`收到响应: ${response.status}`);
-                
+
                 // 检查响应是否正常
                 if (!response.ok) {
+                    if (response.status === 500 && retryCount < maxRetries) {
+                        // HTTP 500 错误，进行重试
+                        console.log(`HTTP 500错误，将在2秒后重试 (${retryCount + 1}/${maxRetries})`);
+                        analysisControllers.delete(outputFile);
+                        
+                        // 等待2秒后重试
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        
+                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
+                    }
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                
+
                 const result = await response.json();
                 if (result.success) {
                     // 提取并显示简化的回答
@@ -820,6 +837,12 @@
                     textarea.readOnly = false;
                     console.log(`分析成功: ${outputFile}`);
                 } else {
+                    if (retryCount < maxRetries) {
+                        console.log(`分析失败，将重试: ${result.error}`);
+                        analysisControllers.delete(outputFile);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
+                    }
                     textarea.value = `分析失败: ${result.error}`;
                     console.log(`分析失败: ${outputFile}, 错误: ${result.error}`);
                 }
@@ -830,15 +853,27 @@
                     message: error.message,
                     stack: error.stack
                 });
-                
+
                 if (error.name === 'AbortError') {
                     console.log('请求被中止，控制器状态:', controller.signal.aborted);
                     textarea.value = '分析已取消';
                 } else if (error.message.includes('Failed to fetch')) {
+                    if (retryCount < maxRetries) {
+                        console.log(`网络错误，将重试: ${error.message}`);
+                        analysisControllers.delete(outputFile);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
+                    }
                     textarea.value = '无法连接到服务器，请确保服务器正在运行';
                 } else if (error.message === 'Markdown内容为空') {
                     textarea.value = '错误：没有可分析的内容';
                 } else {
+                    if (retryCount < maxRetries && !error.name === 'AbortError') {
+                        console.log(`通用错误，将重试: ${error.message}`);
+                        analysisControllers.delete(outputFile);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
+                    }
                     textarea.value = `错误: ${error.message}`;
                 }
             } finally {
@@ -858,11 +893,11 @@
                 controller.abort();
                 analysisControllers.delete(outputFile);
             }
-            
+
             const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
             const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
             const textarea = document.getElementById(`analysis-${outputFile}`);
-            
+
             // 恢复按钮状态
             if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
             if (stopBtn) stopBtn.style.display = 'none';
@@ -872,28 +907,69 @@
             }
         }
 
+        let isBatchAnalyzing = false;
+
+        async function toggleBatchAnalysis() {
+            if (isBatchAnalyzing) {
+                // 当前正在分析，执行停止操作
+                stopAnalysis();
+            } else {
+                // 当前未在分析，开始批量分析
+                await analyzeAllRules();
+            }
+        }
+
         async function analyzeAllRules() {
+            isBatchAnalyzing = true;
             stopAnalysisFlag = false;
-            document.getElementById('stopAnalysisBtn').style.display = 'inline-block';
-            showStatus('开始批量分析...', 'info');
             
+            // 更新按钮状态
+            const batchBtn = document.getElementById('batchAnalyzeBtn');
+            batchBtn.className = 'btn btn-danger';
+            batchBtn.innerHTML = '⏹️ 停止分析';
+            
+            showStatus('开始批量分析...', 'info');
+
+            // 并发执行所有分析任务
+            const analysisPromises = [];
             for (let i = 0; i < processedRules.length; i++) {
                 if (stopAnalysisFlag) {
-                    showStatus('分析已停止', 'info');
                     break;
                 }
-                // 批量分析时传入 true 参数
-                await analyzeRule(i, true);
+                // 不等待每个分析完成，直接推入Promise数组
+                analysisPromises.push(analyzeRule(i, true));
             }
+
+            try {
+                // 等待所有分析任务完成
+                await Promise.allSettled(analysisPromises);
+            } catch (error) {
+                console.error('批量分析过程中出错:', error);
+            }
+
+            // 恢复按钮状态
+            isBatchAnalyzing = false;
+            batchBtn.className = 'btn btn-success';
+            batchBtn.innerHTML = '🤖 Codex 分析所有规则';
             
-            document.getElementById('stopAnalysisBtn').style.display = 'none';
             if (!stopAnalysisFlag) {
                 showStatus('✅ 所有规则分析完成', 'success');
+            } else {
+                showStatus('批量分析已停止', 'info');
             }
         }
 
         function stopAnalysis() {
             stopAnalysisFlag = true;
+            isBatchAnalyzing = false;
+            
+            // 恢复批量分析按钮状态
+            const batchBtn = document.getElementById('batchAnalyzeBtn');
+            if (batchBtn) {
+                batchBtn.className = 'btn btn-success';
+                batchBtn.innerHTML = '🤖 Codex 分析所有规则';
+            }
+            
             // 停止所有正在进行的分析
             analysisControllers.forEach((controller, outputFile) => {
                 controller.abort();
@@ -901,7 +977,7 @@
                 const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
                 const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
                 const textarea = document.getElementById(`analysis-${outputFile}`);
-                
+
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
                 if (textarea && textarea.value === '分析中...') {
@@ -910,34 +986,33 @@
                 }
             });
             analysisControllers.clear();
-            
-            document.getElementById('stopAnalysisBtn').style.display = 'none';
+
             showStatus('批量分析已停止', 'info');
         }
 
         async function fixAll() {
             const analyses = [];
-            
+
             document.querySelectorAll('.codex-analysis').forEach(textarea => {
                 if (textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
                     analyses.push(textarea.value);
                 }
             });
-            
+
             if (analyses.length === 0) {
                 showStatus('没有可用的分析结果', 'error');
                 return;
             }
-            
+
             showStatus(`正在执行修复（共 ${analyses.length} 个任务）...`, 'info');
-            
+
             try {
                 const response = await fetch('http://localhost:3002/fix-all', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ analyses })
                 });
-                
+
                 const result = await response.json();
                 if (result.success) {
                     if (result.url) {
@@ -1042,7 +1117,7 @@
                 node.message.arguments.forEach((arg, index) => {
                     const placeholder = `{${index}}`;
                     let value = '?';
-                    
+
                     if (arg.value !== undefined) {
                         value = arg.value;
                         // 如果有多个值表示，优先显示可读性高的
@@ -1055,7 +1130,7 @@
                     } else if (arg.values && Array.isArray(arg.values) && arg.values.length > 0) {
                         value = arg.values[0];
                     }
-                    
+
                     messageText = messageText.replace(placeholder, value);
                 });
             }
@@ -1080,28 +1155,28 @@
         // 计算Global State差异 - 参考项目版本  
         function calculateGlobalStateDiff(callTrace) {
             const globalStateNodes = [];
-            
+
             // 收集所有Global State节点
             collectGlobalStateNodes(callTrace, globalStateNodes);
-            
+
             if (globalStateNodes.length === 0) {
                 return {};
             }
-            
+
             // 提取第一个和最后一个Global State的状态
             const firstState = extractStateFromGlobalNode(globalStateNodes[0]);
             const lastState = extractStateFromGlobalNode(globalStateNodes[globalStateNodes.length - 1]);
-            
+
             // 计算差异
             const diff = {};
-            
+
             // 收集所有状态键
             const allKeys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
-            
+
             allKeys.forEach(key => {
                 const firstValue = firstState[key];
                 const lastValue = lastState[key];
-                
+
                 // 只有当值确实发生变化时才记录
                 if (firstValue !== lastValue) {
                     diff[key] = {
@@ -1118,7 +1193,7 @@
                     };
                 }
             });
-            
+
             return diff;
         }
 
@@ -1127,7 +1202,7 @@
             if (node && node.message && node.message.text === "Global State") {
                 globalStateNodes.push(node);
             }
-            
+
             if (node && node.childrenList) {
                 node.childrenList.forEach(child => {
                     collectGlobalStateNodes(child, globalStateNodes);
@@ -1138,13 +1213,13 @@
         // 从Global State节点中提取状态信息
         function extractStateFromGlobalNode(globalStateNode) {
             const state = {};
-            
+
             if (globalStateNode.childrenList) {
                 globalStateNode.childrenList.forEach(child => {
                     extractStateRecursively(child, state);
                 });
             }
-            
+
             return state;
         }
 
@@ -1155,7 +1230,7 @@
                 // 替换占位符得到完整的状态路径
                 let fullPath = node.message.text;
                 let stateValue = null;
-                
+
                 node.message.arguments.forEach((arg, index) => {
                     const placeholder = `{${index}}`;
                     if (fullPath.includes(placeholder)) {
@@ -1170,7 +1245,7 @@
                                 }
                             }
                             fullPath = fullPath.replace(placeholder, displayValue);
-                            
+
                             // 最后一个参数通常是值
                             if (index === node.message.arguments.length - 1) {
                                 stateValue = displayValue;
@@ -1180,14 +1255,14 @@
                         }
                     }
                 });
-                
+
                 // 解析路径和值
                 const parsed = parseStatePath(fullPath, stateValue);
                 if (parsed.path && parsed.value !== null) {
                     state[parsed.path] = parsed.value;
                 }
             }
-            
+
             // 递归处理子节点
             if (node.childrenList) {
                 node.childrenList.forEach(child => {
@@ -1202,25 +1277,25 @@
             if (colonIndex === -1) {
                 return { path: fullText.trim(), value: extractedValue || 'undefined' };
             }
-            
+
             const path = fullText.substring(0, colonIndex).trim();
             let value = fullText.substring(colonIndex + 2).trim();
-            
+
             // 如果有从arguments中提取的值，优先使用
             if (extractedValue && extractedValue !== 'undefined') {
                 value = extractedValue;
             }
-            
+
             // 清理引号
             value = value.replace(/^['"]|['"]$/g, '');
-            
+
             return { path, value };
         }
 
         // 渲染Global State差异
         function renderGlobalStateDiff(diff) {
             let md = '';
-            
+
             // 按路径类型分组
             const groups = {
                 'storage': { title: 'Storage Changes', items: [] },
@@ -1228,10 +1303,10 @@
                 'ghost': { title: 'Ghost Variable Changes', items: [] },
                 'other': { title: 'Other Changes', items: [] }
             };
-            
+
             Object.entries(diff).forEach(([path, change]) => {
                 const item = { path, change };
-                
+
                 if (path.includes('storage') || path.includes('balanceOf') || path.includes('_storage')) {
                     groups.storage.items.push(item);
                 } else if (path.includes('balance') || path.includes('Balance')) {
@@ -1242,7 +1317,7 @@
                     groups.other.items.push(item);
                 }
             });
-            
+
             // 渲染各组
             Object.values(groups).forEach(group => {
                 if (group.items.length > 0) {
@@ -1258,14 +1333,14 @@
                     md += `\n`;
                 }
             });
-            
+
             return md;
         }
 
         // 从variables数组中渲染层次结构 - 参考项目版本
         function renderVariablesFromArray(variables) {
             let md = '';
-            
+
             variables.forEach((variable, index) => {
                 // 只处理有variableName字段的对象
                 if (variable && typeof variable === 'object' && variable.hasOwnProperty('variableName')) {
@@ -1280,7 +1355,7 @@
                     }
                 }
             });
-            
+
             return md;
         }
 
@@ -1288,7 +1363,7 @@
         function renderNestedVariable(variable, parentPath = []) {
             let md = '';
             const currentPath = parentPath.length > 0 ? [...parentPath, variable.variableName] : [variable.variableName];
-            
+
             // 如果有子变量，递归处理
             if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
                 variable.childrenList.forEach(child => {
@@ -1303,7 +1378,7 @@
                 const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
                 md += `**${fullPath}**: \`${value}\`\n\n`;
             }
-            
+
             return md;
         }
 
@@ -1320,18 +1395,18 @@
             if (existingNotification) {
                 existingNotification.remove();
             }
-            
+
             // 创建新通知
             const notification = document.createElement('div');
             notification.className = 'copy-notification';
             notification.textContent = message;
             document.body.appendChild(notification);
-            
+
             // 显示动画
             setTimeout(() => {
                 notification.classList.add('show');
             }, 10);
-            
+
             // 2秒后隐藏并删除
             setTimeout(() => {
                 notification.classList.remove('show');
@@ -1395,7 +1470,7 @@
             }
         }
 
-        window.onclick = function(event) {
+        window.onclick = function (event) {
             const modal1 = document.getElementById('markdown-modal');
             const modal2 = document.getElementById('codex-modal');
             if (event.target == modal1) {
@@ -1407,4 +1482,5 @@
         }
     </script>
 </body>
+
 </html>
