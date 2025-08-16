@@ -146,7 +146,11 @@ function collectFailedRuleOutputs(node, runInfo, results = [], currentPath = [])
     const children = Array.isArray(node.children) ? node.children : [];
     const nextPath = currentPath.concat(name);
 
-    if (status && status !== 'VERIFIED' && output.length > 0) {
+    // 原来的逻辑：收集所有非VERIFIED状态的规则
+    // if (status && status !== 'VERIFIED' && output.length > 0) {
+    
+    // 新逻辑：只收集VIOLATED和SANITY_FAILED状态的规则
+    if (status && (status === 'VIOLATED' || status === 'SANITY_FAILED') && output.length > 0) {
         for (const outputFile of output) {
             if (typeof outputFile === 'string' && /^rule_output_\d+\.json$/.test(outputFile)) {
                 const baseUrl = `${runInfo.origin}/result/${runInfo.runId}/${runInfo.outputId}`;
@@ -243,7 +247,7 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
         }
 
         const failedRules = collectFailedRuleOutputs(progressData, runInfo, [], '');
-        sendProgress(`找到 ${failedRules.length} 个非verified规则，正在获取JSON内容...`);
+        sendProgress(`找到 ${failedRules.length} 个需要分析的规则（VIOLATED和SANITY_FAILED），正在获取JSON内容...`);
 
         const results = [];
         for (const rule of failedRules) {
@@ -360,7 +364,7 @@ app.post('/analyze-and-fetch', async (req, res) => {
             return numA - numB;
         });
 
-        console.log(`找到 ${sortedRules.length} 个非verified规则，正在获取JSON内容...`);
+        console.log(`找到 ${sortedRules.length} 个需要分析的规则（VIOLATED和SANITY_FAILED），正在获取JSON内容...`);
 
         // 带重试的获取函数：直至成功
         const fetchJsonWithRetry = async (rule, delayMs = 2000) => {
@@ -689,10 +693,34 @@ ${content}`;
         }
         codexArgs.push(cleanPromptText);
 
-        const codexProcess = spawn('codex', codexArgs, {
+        const analyzeCodexProcess = spawn('codex', codexArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env }
+            env: { ...process.env },
+            detached: true
         });
+
+        // 如客户端断开，终止子进程
+        let analyzeKilled = false;
+        const killAnalyzeProc = () => {
+            try {
+                if (!analyzeKilled && analyzeCodexProcess && analyzeCodexProcess.pid) {
+                    analyzeKilled = true;
+                    try { analyzeCodexProcess.kill('SIGTERM'); } catch {}
+                    try { process.kill(-analyzeCodexProcess.pid, 'SIGTERM'); } catch {}
+                    setTimeout(() => {
+                        try {
+                            if (analyzeCodexProcess && analyzeCodexProcess.pid) {
+                                try { analyzeCodexProcess.kill('SIGKILL'); } catch {}
+                                try { process.kill(-analyzeCodexProcess.pid, 'SIGKILL'); } catch {}
+                            }
+                        } catch {}
+                    }, 1200);
+                }
+            } catch {}
+        };
+        req.on('close', killAnalyzeProc);
+        req.on('aborted', killAnalyzeProc);
+        res.on('close', killAnalyzeProc);
 
         let fullOutput = '';
         let hasError = false;
@@ -703,7 +731,7 @@ ${content}`;
         // 不再流式输出助理内容：仅输出系统头，其余等待最终结果
         let headerEmitted = false;
 
-        codexProcess.stdout.on('data', (data) => {
+        analyzeCodexProcess.stdout.on('data', (data) => {
             const chunk = data.toString();
             fullOutput += chunk;
 
@@ -729,12 +757,12 @@ ${content}`;
             headerEmitted = true;
         });
 
-        codexProcess.stderr.on('data', (data) => {
+        analyzeCodexProcess.stderr.on('data', (data) => {
             const errorOutput = data.toString();
             sendProgress(errorOutput, 'error');
         });
 
-        codexProcess.on('error', (error) => {
+        analyzeCodexProcess.on('error', (error) => {
             hasError = true;
             if (error.code === 'ENOENT') {
                 console.error('Codex CLI 未找到，请确保已安装');
@@ -747,7 +775,7 @@ ${content}`;
             }
         });
 
-        codexProcess.on('close', (code) => {
+        analyzeCodexProcess.on('close', (code) => {
             console.log(`Codex 进程结束，退出码: ${code}`);
             if (code === 0 && !hasError) {
                 // 提取最终分析结果，仅在结束时输出
@@ -812,9 +840,9 @@ ${item.text}
 ╚═══════════════════════════════════════════════════════════════════════════════════╝`;
         });
 
-        const promptText = `Your task is to fix the issues discovered in the ${analyses.length} analysis results below. Please address them in order. Each result is clearly separated in a block, identified by its rule name in the header.
+        const promptText = `You will perform sequential fixes. I will provide exactly one analysis finding per run. After you finish fixing that single item, exit. A new Codex session will then start for the next item.
 
-Before you start, carefully read the working guidelines in the YAML file:
+Before you start, carefully read the working guidelines in the YAML file (keep them in mind for every item):
 \`\`\`yaml 
 # ** STRATEGIES FOR HANDLING UNREACHABLE INITIAL STATE PROBLEMS AND FALSE POSITIVES CAUSED BY HAVOC IN CERTORA FORMAL VERIFICATION **
 
@@ -1041,18 +1069,18 @@ ${formattedAnalyses.join('\n\n')}
 CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
 CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
 CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
-### STEP 1: ANALYZE FINDINGS INDIVIDUALLY
-            - CAREFULLY REVIEW THE ${analyses.length} FINDINGS LISTED ABOVE.
-- IDENTIFY THE SPECIFIC ISSUE MENTIONED IN EACH FINDING.
+### STEP 1: ANALYZE THE GIVEN SINGLE FINDING
+            - CAREFULLY REVIEW THE PROVIDED FINDING ONLY.
+- IDENTIFY THE SPECIFIC ISSUE MENTIONED IN THIS FINDING.
 
 ### STEP 2: CREATE A REMEDIATION PLAN
             - BASED ON THE WORKFLOW GUIDE, CREATE A CHECKLIST OF SPECIFIC ISSUES TO BE FIXED.
 - DETERMINE THE PRIORITY AND SEQUENCE FOR THE REMEDIATION.
 - IDENTIFY THE RELEVANT SPEC FILES AND CVL CODE LOCATIONS.
 
-### STEP 3: EXECUTE REMEDIATION
+### STEP 3: EXECUTE REMEDIATION (SINGLE ITEM)
             - ** DIRECTLY MODIFY THE ACTUAL.SPEC AND / OR.CONF FILES.**
-                - REMEDIATE THE ISSUES SEQUENTIALLY BASED ON THE ANALYSIS FINDINGS:
+                - REMEDIATE THE ISSUE DESCRIBED IN THIS FINDING ONLY:
         - CORRECT LOGICAL ERRORS IN THE CVL SPECIFICATIONS.
   - ADJUST CONTRADICTORY INITIAL CONDITIONS OR ASSUMPTIONS.
   - IMPROVE SPECIFICATION COVERAGE AND THE HANDLING OF BOUNDARY CONDITIONS.
@@ -1065,12 +1093,11 @@ CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNE
 - REPEATEDLY RUN  certoraRun *.conf  UNTIL NO SYNTAX ERRORS REMAIN.
 - ENSURE ALL MODIFIED SPEC FILES ARE SYNTACTICALLY CORRECT.
 
-### STEP 5: FINAL VERIFICATION
-            - EXECUTE A FULL VERIFICATION BY RUNNING certoraRun *.conf .
-- MONITOR THE VERIFICATION PROGRESS AND WAIT FOR COMPLETION.THE CERTORA CLI WILL PROVIDE A COMPLETE URL.
-- ** IMPORTANT: IF VERIFICATION SUCCEEDS, YOU MUST PROVIDE THE RESULT URL.**
+### STEP 5: FINAL VERIFICATION (AFTER ALL ITEMS FIXED BY THE ORCHESTRATOR)
+            - THE ORCHESTRATOR WILL RUN certoraRun *.conf AFTER ALL ITEMS ARE FIXED.
+- IF YOU NEED TO RUN SYNTAX CHECKS LOCALLY, DO SO AS PART OF YOUR SINGLE-ITEM FIX, THEN EXIT.
 
-            PLEASE BEGIN THE REMEDIATION TASK, STRICTLY ADHERING TO THE STEPS OUTLINED ABOVE: `;
+            PLEASE BEGIN THE REMEDIATION TASK FOR A SINGLE ITEM WHEN PROVIDED: `;
 
         res.json({
             success: true,
@@ -1144,14 +1171,15 @@ app.post('/fix-all-stream', async (req, res) => {
         console.log('Codex 命令参数:', codexArgs.slice(0, -1)); // 不打印完整 prompt
 
         // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
-        const codexProcess = spawn('codex', codexArgs, {
+        const fixCodexProcess = spawn('codex', codexArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env }
+            env: { ...process.env },
+            detached: true
         });
 
         let hasError = false;
 
-        codexProcess.stdout.on('data', (data) => {
+        fixCodexProcess.stdout.on('data', (data) => {
             const output = data.toString();
             sendProgress(output, 'output');
 
@@ -1162,12 +1190,12 @@ app.post('/fix-all-stream', async (req, res) => {
             }
         });
 
-        codexProcess.stderr.on('data', (data) => {
+        fixCodexProcess.stderr.on('data', (data) => {
             const errorOutput = data.toString();
             sendProgress(errorOutput, 'error');
         });
 
-        codexProcess.on('error', (error) => {
+        fixCodexProcess.on('error', (error) => {
             hasError = true;
             if (error.code === 'EPIPE') {
                 console.log('修复进程管道关闭 (EPIPE) - 这通常是正常的');
@@ -1177,7 +1205,7 @@ app.post('/fix-all-stream', async (req, res) => {
             }
         });
 
-        codexProcess.on('close', (code) => {
+        fixCodexProcess.on('close', (code) => {
             console.log(`修复进程结束，退出码: ${code} `);
             if (code === 0 && !hasError) {
                 sendProgress('修复任务完成', 'success');
@@ -1192,6 +1220,204 @@ app.post('/fix-all-stream', async (req, res) => {
         console.error('修复错误:', error);
         sendProgress(`修复错误: ${error.message} `, 'error');
         res.write(`data: ${JSON.stringify({ type: 'complete' })} \n\n`);
+        res.end();
+    }
+});
+
+// 新增：顺序修复 + certoraRun 循环
+app.post('/fix-sequential-stream', async (req, res) => {
+    const { basePrompt, analyses, projectPath, confPath } = req.body || {};
+
+    if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
+        return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+            success: false,
+            error: '缺少分析结果（analyses）'
+        }));
+    }
+
+    // SSE 头
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+    });
+
+    const send = (message, type = 'output') => {
+        try {
+            res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+        } catch {}
+    };
+
+    let aborted = false;
+    let currentChild = null;
+    const killCurrent = () => {
+        try {
+            if (currentChild && currentChild.pid) {
+                try { currentChild.kill('SIGTERM'); } catch {}
+                try { process.kill(-currentChild.pid, 'SIGTERM'); } catch {}
+                setTimeout(() => {
+                    try {
+                        if (currentChild && currentChild.pid) {
+                            try { currentChild.kill('SIGKILL'); } catch {}
+                            try { process.kill(-currentChild.pid, 'SIGKILL'); } catch {}
+                        }
+                    } catch {}
+                }, 1500);
+            }
+        } catch {}
+    };
+    req.on('close', () => { aborted = true; killCurrent(); });
+
+    const spawnCodexOnce = async (promptText) => {
+        const { spawn } = await import('child_process');
+        return new Promise((resolve) => {
+            const args = [
+                'exec',
+                '--dangerously-bypass-approvals-and-sandbox',
+                '-c', 'model_reasoning_effort=high',
+                '-c', 'model_reasoning_summary=detailed'
+            ];
+            if (projectPath && String(projectPath).trim()) {
+                args.push('-C', String(projectPath).trim());
+                send(`设置工作目录: ${String(projectPath).trim()}`, 'info');
+            }
+            args.push(String(promptText || '').replace(/\0/g, ''));
+
+            send('启动 Codex 进行单项修复...', 'info');
+            currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env }, detached: true });
+
+            currentChild.stdout.on('data', (d) => send(d.toString(), 'output'));
+            currentChild.stderr.on('data', (d) => send(d.toString(), 'error'));
+            currentChild.on('error', (e) => send(`进程错误: ${e.message}`, 'error'));
+            currentChild.on('close', (code) => {
+                currentChild = null;
+                send(`Codex 退出: ${code}`, code === 0 ? 'success' : 'error');
+                resolve(code === 0);
+            });
+        });
+    };
+
+    const runCertora = async () => {
+        if (!confPath || !String(confPath).trim()) {
+            send('未提供 conf 路径，跳过 certoraRun', 'info');
+            return { success: false, url: '', output: '' };
+        }
+
+        const { spawn } = await import('child_process');
+        return new Promise((resolve) => {
+            const cmd = 'certoraRun';
+            const args = [String(confPath).trim()];
+            const spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env } };
+            if (projectPath && String(projectPath).trim()) spawnOpts.cwd = String(projectPath).trim();
+
+            send(`运行: certoraRun ${args.join(' ')}`, 'info');
+            currentChild = spawn(cmd, args, spawnOpts);
+            let out = '';
+            let err = '';
+            currentChild.stdout.on('data', (d) => { const s = d.toString(); out += s; send(s, 'output'); });
+            currentChild.stderr.on('data', (d) => { const s = d.toString(); err += s; send(s, 'output'); });
+            currentChild.on('error', (e) => { send(`certoraRun 进程错误: ${e.message}`, 'error'); });
+            currentChild.on('close', () => {
+                currentChild = null;
+                const combined = `${out}\n${err}`;
+                const urlMatches = combined.match(/https:\/\/prover\.certora\.com\/output\/[^\s]+/g);
+                const url = urlMatches && urlMatches.length ? urlMatches[urlMatches.length - 1] : '';
+                if (url) {
+                    send(url, 'url');
+                    send('certoraRun 成功，已获得验证URL', 'success');
+                    resolve({ success: true, url, output: combined });
+                } else {
+                    send('certoraRun 未返回验证URL，视为失败', 'error');
+                    resolve({ success: false, url: '', output: combined });
+                }
+            });
+        });
+    };
+
+    try {
+        send(`开始顺序修复，共 ${analyses.length} 项`, 'info');
+
+        // 标准化输入
+        const items = analyses.map((a, i) => {
+            if (a && typeof a === 'object') {
+                const text = a.text ?? a.analysis ?? '';
+                const ruleName = a.ruleName ?? a.name ?? a.rule ?? `Item ${i + 1}`;
+                return { text: String(text || ''), ruleName: String(ruleName || `Item ${i + 1}`) };
+            }
+            return { text: String(a || ''), ruleName: `Item ${i + 1}` };
+        });
+
+        // 逐项修复
+        for (let i = 0; i < items.length; i++) {
+            if (aborted) break;
+            const item = items[i];
+            send(`➡️ 开始修复第 ${i + 1}/${items.length} 项：${item.ruleName}`, 'info');
+
+            const perPrompt = `${String(basePrompt || '')}
+
+请仅修复下面这一个分析结论描述的问题，然后退出：
+╔══════════════════════════════════════════════════════════════╗
+规则：${item.ruleName}
+
+${item.text}
+╚══════════════════════════════════════════════════════════════╝
+
+要求：
+- 仅修改与该项相关的代码/规范/配置；完成后退出。
+- 如需执行命令，请直接执行并确保无语法错误。
+- 不要处理未提及的其它问题。
+现在开始。`;
+
+            const ok = await spawnCodexOnce(perPrompt);
+            if (!ok && aborted) break;
+            send(`✅ 第 ${i + 1} 项修复完成`, 'success');
+        }
+
+        if (aborted) {
+            send('顺序修复被中止', 'info');
+            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            return res.end();
+        }
+
+        // 修复完成后执行 certoraRun（如提供 confPath）
+        if (confPath && String(confPath).trim()) {
+            send('全部修复完成，开始运行 certoraRun ...', 'info');
+
+            const maxAttempts = 5; // 安全上限，避免无限循环
+            let attempt = 0;
+            while (!aborted) {
+                attempt++;
+                send(`certoraRun 尝试 ${attempt}/${maxAttempts}`, 'info');
+                const result = await runCertora();
+                if (result.success) break;
+
+                if (attempt >= maxAttempts) {
+                    send('达到最大重试次数，停止自动修复。', 'error');
+                    break;
+                }
+
+                // 将失败信息交给 Codex 修复
+                const failurePrompt = `${String(basePrompt || '')}
+
+certoraRun 失败，以下为完整日志（stdout+stderr）。请分析根因并修复配置/规范/代码，使 certoraRun 能成功并返回验证URL。修复后退出：
+\n\n${result.output.slice(-8000)}\n\n`;
+
+                send('certoraRun 失败，发送日志给 Codex 进行修复 ...', 'info');
+                await spawnCodexOnce(failurePrompt);
+            }
+        } else {
+            send('未提供 conf 路径，跳过 certoraRun', 'info');
+        }
+
+        send('顺序修复流程完成', 'success');
+        res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+        res.end();
+
+    } catch (e) {
+        send(`顺序修复出错: ${e.message}`, 'error');
+        res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
         res.end();
     }
 });
@@ -1223,7 +1449,7 @@ ${combinedAnalysis}
         const cleanPromptText = promptText.replace(/\0/g, '');
 
         // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
-        const codexProcess = spawn('codex', [
+        codexProcess = spawn('codex', [
             'exec',
             '--dangerously-bypass-approvals-and-sandbox',
             '-c', 'model_reasoning_effort=high',
@@ -1231,7 +1457,8 @@ ${combinedAnalysis}
             cleanPromptText
         ], {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env }
+            env: { ...process.env },
+            detached: true
         });
 
         let output = '';
@@ -1257,6 +1484,24 @@ ${combinedAnalysis}
             }
         });
 
+        // 如客户端断开，终止子进程（静默，无日志）
+        req.on('close', () => {
+            try {
+                if (codexProcess && codexProcess.pid) {
+                    try { codexProcess.kill('SIGTERM'); } catch {}
+                    try { process.kill(-codexProcess.pid, 'SIGTERM'); } catch {}
+                    setTimeout(() => {
+                        try {
+                            if (codexProcess && codexProcess.pid) {
+                                try { codexProcess.kill('SIGKILL'); } catch {}
+                                try { process.kill(-codexProcess.pid, 'SIGKILL'); } catch {}
+                            }
+                        } catch {}
+                    }, 1200);
+                }
+            } catch {}
+        });
+
         codexProcess.on('close', (code) => {
             console.log(`修复进程结束，退出码: ${code} `);
             if (code === 0) {
@@ -1277,6 +1522,84 @@ ${combinedAnalysis}
 
     } catch (error) {
         console.error('修复错误:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// 新增：手动终止所有 codex 进程的端点
+app.post('/kill-processes', async (req, res) => {
+    try {
+        console.log('收到手动终止进程请求');
+        
+        const { spawn } = await import('child_process');
+        
+        // 使用 pkill 命令终止所有 codex 进程
+        const killProcess = spawn('pkill', ['-f', 'codex'], {
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        
+        let output = '';
+        let errorOutput = '';
+        
+        killProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        killProcess.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+        
+        killProcess.on('close', (code) => {
+            console.log(`pkill 命令结束，退出码: ${code}`);
+            
+            // 检查是否还有残留进程
+            const checkProcess = spawn('pgrep', ['-f', 'codex'], {
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+            
+            let remaining = '';
+            checkProcess.stdout.on('data', (data) => {
+                remaining += data.toString();
+            });
+            
+            checkProcess.on('close', (checkCode) => {
+                const remainingPids = remaining.trim().split('\n').filter(pid => pid);
+                
+                if (remainingPids.length > 0 && remainingPids[0] !== '') {
+                    console.log(`发现残留进程: ${remainingPids.join(', ')}`);
+                    res.json({
+                        success: true,
+                        message: `已尝试终止进程，发现 ${remainingPids.length} 个残留进程`,
+                        remainingPids: remainingPids,
+                        killOutput: output,
+                        killError: errorOutput
+                    });
+                } else {
+                    console.log('所有 codex 进程已终止');
+                    res.json({
+                        success: true,
+                        message: '所有 codex 进程已成功终止',
+                        remainingPids: [],
+                        killOutput: output,
+                        killError: errorOutput
+                    });
+                }
+            });
+        });
+        
+        killProcess.on('error', (error) => {
+            console.error('终止进程时出错:', error);
+            res.json({
+                success: false,
+                error: `终止进程失败: ${error.message}`
+            });
+        });
+        
+    } catch (error) {
+        console.error('手动终止进程错误:', error);
         res.status(500).json({
             success: false,
             error: error.message

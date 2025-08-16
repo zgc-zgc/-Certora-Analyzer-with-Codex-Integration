@@ -563,6 +563,20 @@
                     </small>
                 </div>
 
+                <div style="margin: 0 0 20px 0;">
+                    <label for="certora-conf-path" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
+                        ⚙️ certoraRun 配置文件路径（.conf）：
+                    </label>
+                    <input type="text" id="certora-conf-path"
+                           placeholder="./certora/conf/my_config.conf"
+                           value=""
+                           style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
+                                  font-family: 'Courier New', monospace; font-size: 14px;">
+                    <small style="color: #6c757d; display: block; margin-top: 5px;">
+                        💡 修复完成后将运行 certoraRun <该路径>，并在成功时显示验证链接。
+                    </small>
+                </div>
+
                 <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
                     🔍 获取验证数据
                 </button>
@@ -582,6 +596,9 @@
             <!-- 修复执行输出区域 - 移到主界面 -->
             <div id="main-fix-output" style="display: none; margin-top: 20px;">
                 <h3 style="margin-bottom: 20px; color: #212529;">🔧 修复执行过程</h3>
+                <div id="main-fix-controls" style="margin-bottom: 12px; display: none;">
+                    <button class="btn btn-danger" id="stop-fix-btn" onclick="stopFix()">⏸ 暂停并终止 Codex</button>
+                </div>
                 <div id="main-fix-status" class="status-message" style="margin-bottom: 15px;"></div>
                 <div id="main-fix-content" style="background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; 
                      font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; 
@@ -675,6 +692,8 @@
         let sanityAggregated = null;
         let stopAnalysisFlag = false;
         const analysisControllers = new Map(); // 为每个分析维护独立的控制器
+        let lastFixAnalyses = []; // 顺序修复用的分析结果缓存
+        let fixAbortController = null; // 顺序修复的控制器（用于暂停/终止）
 
         // 处理 Codex 输出，只保留最终回答
         function extractCodexAnswer(fullOutput) {
@@ -1270,6 +1289,9 @@
                 return;
             }
 
+            // 缓存到全局，供顺序修复使用
+            lastFixAnalyses = analyses;
+
             showStatus(`正在生成修复 prompt（共 ${analyses.length} 个分析结果）...`, 'info');
 
             try {
@@ -1305,6 +1327,7 @@
         async function executeFixWithPrompt() {
             const prompt = document.getElementById('fix-prompt-editor').value.trim();
             const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
+            const confPath = (document.getElementById('certora-conf-path')?.value || '').trim();
             
             if (!prompt) {
                 showFixStatus('请输入修复 prompt', 'error');
@@ -1318,6 +1341,8 @@
             document.getElementById('main-fix-output').style.display = 'block';
             document.getElementById('main-fix-content').textContent = '';
             document.getElementById('main-verification-url').style.display = 'none';
+            // 显示停止按钮
+            document.getElementById('main-fix-controls').style.display = 'block';
             
             // 显示项目路径信息
             if (projectPath) {
@@ -1327,16 +1352,18 @@
             }
 
             try {
-                // 使用流式端点执行修复，包含项目路径
-                const requestBody = { prompt };
-                if (projectPath) {
-                    requestBody.projectPath = projectPath;
-                }
-                
-                const response = await fetch('http://localhost:3002/fix-all-stream', {
+                // 使用顺序流式端点执行修复，包含项目路径与conf路径
+                const requestBody = { basePrompt: prompt, analyses: lastFixAnalyses };
+                if (projectPath) requestBody.projectPath = projectPath;
+                if (confPath) requestBody.confPath = confPath;
+                // 创建并保存控制器，便于暂停
+                fixAbortController = new AbortController();
+
+                const response = await fetch('http://localhost:3002/fix-sequential-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
+                    body: JSON.stringify(requestBody),
+                    signal: fixAbortController.signal
                 });
 
                 if (!response.ok) {
@@ -1368,7 +1395,15 @@
                 }
             } catch (error) {
                 console.error('修复执行错误:', error);
-                showMainFixStatus(`执行错误: ${error.message}`, 'error');
+                if (error.name === 'AbortError') {
+                    showMainFixStatus('已暂停并请求终止 Codex 进程', 'info');
+                } else {
+                    showMainFixStatus(`执行错误: ${error.message}`, 'error');
+                }
+            } finally {
+                // 无论成功或失败，隐藏停止按钮
+                document.getElementById('main-fix-controls').style.display = 'none';
+                fixAbortController = null;
             }
         }
 
@@ -1403,6 +1438,8 @@
                     break;
                 case 'complete':
                     showMainFixStatus('修复任务执行完成', 'success');
+                    // 任务自然完成，隐藏停止按钮
+                    document.getElementById('main-fix-controls').style.display = 'none';
                     break;
             }
         }
@@ -1442,6 +1479,27 @@
             statusDiv.className = `status-message status-${type}`;
             statusDiv.textContent = message;
             statusDiv.style.display = 'block';
+        }
+
+        // 停止顺序修复：中止SSE并请求后端终止 Codex 进程
+        async function stopFix() {
+            try {
+                // 先中止前端与服务器的连接，这会触发服务器端 req 'close' 钩子，从而 SIGTERM 当前子进程
+                if (fixAbortController) {
+                    fixAbortController.abort();
+                }
+
+                showMainFixStatus('正在终止 Codex 进程...', 'info');
+
+                // 再调用后端统一终止接口，确保所有相关 codex 进程被关闭
+                await fetch('http://localhost:3002/kill-processes', { method: 'POST' }).catch(() => {});
+                showMainFixStatus('已请求终止 Codex 进程', 'success');
+            } catch (e) {
+                showMainFixStatus(`终止进程时出错: ${e.message}`, 'error');
+            } finally {
+                // 隐藏按钮，避免重复点击
+                document.getElementById('main-fix-controls').style.display = 'none';
+            }
         }
 
         function showFixStatus(message, type = 'info') {
