@@ -397,9 +397,6 @@
         }
 
         .copy-btn-small {
-            position: absolute;
-            top: 8px;
-            right: 8px;
             background: rgba(23, 162, 184, 0.9);
             color: white;
             border: none;
@@ -417,6 +414,26 @@
             opacity: 1;
             transform: scale(1.05);
             background: rgba(19, 132, 150, 0.95);
+        }
+
+        .edit-btn-small {
+            background: rgba(102, 126, 234, 0.9);
+            color: white;
+            border: none;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            opacity: 0.8;
+            backdrop-filter: blur(4px);
+        }
+
+        .edit-btn-small:hover {
+            opacity: 1;
+            transform: scale(1.05);
+            background: rgba(90, 110, 210, 0.95);
         }
 
         /* 新增样式：修复 prompt 预览界面 */
@@ -589,7 +606,7 @@
                     🤖 Codex 分析所有规则
                 </button>
                 <button class="btn btn-warning" onclick="fixAll()">
-                    🔧 执行批量修复
+                    🔧 执行顺序修复
                 </button>
             </div>
 
@@ -873,10 +890,19 @@
                                       placeholder="点击分析按钮获取Codex分析结果..."
                                       onclick="expandCodexAnalysis('${rule.outputFile}')"
                                       readonly></textarea>
-                            <button class="copy-btn-small" 
-                                    onclick="copyCodexAnalysis('${rule.outputFile}')">
-                                📋 复制
-                            </button>
+                            <div style="display: flex; gap: 5px; position: absolute; top: 5px; right: 5px;">
+                                <button class="edit-btn-small" 
+                                        id="edit-btn-${rule.outputFile}"
+                                        onclick="toggleEditMode('${rule.outputFile}')"
+                                        title="编辑">
+                                    ✏️
+                                </button>
+                                <button class="copy-btn-small" 
+                                        onclick="copyCodexAnalysis('${rule.outputFile}')"
+                                        title="复制">
+                                    📋
+                                </button>
+                            </div>
                         </div>
                     </td>
                     <td>
@@ -896,9 +922,40 @@
             document.getElementById('result-section').style.display = 'block';
         }
 
+        function toggleEditMode(outputFile) {
+            const textarea = document.getElementById(`analysis-${outputFile}`);
+            const editBtn = document.getElementById(`edit-btn-${outputFile}`);
+            
+            if (textarea.readOnly) {
+                // 进入编辑模式
+                textarea.readOnly = false;
+                textarea.style.backgroundColor = '#fffef0';
+                textarea.style.border = '2px solid #667eea';
+                editBtn.textContent = '✅'; // 保存图标
+                editBtn.title = '保存';
+                
+                // 禁用点击展开功能
+                textarea.onclick = null;
+                
+                showStatus('已进入编辑模式，可以修改分析结果', 'info');
+            } else {
+                // 保存并退出编辑模式
+                textarea.readOnly = true;
+                textarea.style.backgroundColor = '';
+                textarea.style.border = '';
+                editBtn.textContent = '✏️'; // 编辑图标
+                editBtn.title = '编辑';
+                
+                // 恢复点击展开功能
+                textarea.onclick = () => expandCodexAnalysis(outputFile);
+                
+                showStatus('分析结果已保存', 'success');
+            }
+        }
+
         function expandCodexAnalysis(outputFile) {
             const textarea = document.getElementById(`analysis-${outputFile}`);
-            if (textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
+            if (textarea.readOnly && textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
                 document.getElementById('codex-modal-title').textContent = 'Codex 分析详情';
                 document.getElementById('codex-modal-content').textContent = textarea.value;
                 document.getElementById('codex-modal').style.display = 'block';
@@ -1304,10 +1361,8 @@
 
                 const result = await response.json();
                 if (result.success) {
-                    // 显示 prompt 预览模态框
-                    document.getElementById('fix-prompt-editor').value = result.prompt;
-                    document.getElementById('fix-prompt-modal').style.display = 'block';
-                    showStatus('修复 prompt 已生成，请预览并编辑后点击执行', 'success');
+                    // 直接执行修复，不显示预览模态框
+                    executeFixDirectly(result.prompt);
                 } else {
                     showStatus(`生成 prompt 失败: ${result.error}`, 'error');
                 }
@@ -1322,6 +1377,85 @@
             document.getElementById('fix-output-area').style.display = 'none';
             document.getElementById('fix-output-content').textContent = '';
             document.getElementById('verification-url').style.display = 'none';
+        }
+
+        async function executeFixDirectly(prompt) {
+            const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
+            const confPath = (document.getElementById('certora-conf-path')?.value || '').trim();
+            
+            if (!prompt) {
+                showStatus('修复 prompt 为空', 'error');
+                return;
+            }
+
+            // 显示主界面输出区域
+            document.getElementById('main-fix-output').style.display = 'block';
+            document.getElementById('main-fix-content').textContent = '';
+            document.getElementById('main-verification-url').style.display = 'none';
+            // 显示停止按钮
+            document.getElementById('main-fix-controls').style.display = 'block';
+            
+            // 显示项目路径信息
+            if (projectPath) {
+                showMainFixStatus(`正在执行修复任务... 项目路径: ${projectPath}`, 'info');
+            } else {
+                showMainFixStatus('正在执行修复任务... 使用自动项目搜索', 'info');
+            }
+
+            try {
+                // 使用顺序流式端点执行修复，包含项目路径与conf路径
+                const requestBody = { basePrompt: prompt, analyses: lastFixAnalyses };
+                if (projectPath) requestBody.projectPath = projectPath;
+                if (confPath) requestBody.confPath = confPath;
+                // 创建并保存控制器，便于暂停
+                fixAbortController = new AbortController();
+
+                const response = await fetch('http://localhost:3002/fix-sequential-stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody),
+                    signal: fixAbortController.signal
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // 保留不完整的行
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                handleMainFixStreamData(data);
+                            } catch (e) {
+                                console.error('解析SSE数据错误:', e, line);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('修复执行错误:', error);
+                if (error.name === 'AbortError') {
+                    showMainFixStatus('已暂停并请求终止 Codex 进程', 'info');
+                } else {
+                    showMainFixStatus(`执行错误: ${error.message}`, 'error');
+                }
+            } finally {
+                // 无论成功或失败，隐藏停止按钮
+                document.getElementById('main-fix-controls').style.display = 'none';
+                fixAbortController = null;
+            }
         }
 
         async function executeFixWithPrompt() {
@@ -1415,15 +1549,15 @@
                     showMainFixStatus(data.message, 'info');
                     break;
                 case 'output':
-                    // 过滤掉 prompt 内容，只显示 codex 的实际回应
-                    const cleanOutput = filterPromptFromOutput(data.message);
-                    if (cleanOutput) {
-                        outputContent.textContent += cleanOutput;
+                    // 格式化输出，处理时间戳换行
+                    const formattedOutput = formatCodexOutput(data.message);
+                    if (formattedOutput) {
+                        outputContent.innerHTML += formattedOutput;
                         outputContent.scrollTop = outputContent.scrollHeight;
                     }
                     break;
                 case 'error':
-                    outputContent.textContent += `[ERROR] ${data.message}`;
+                    outputContent.innerHTML += `<span style="color: #dc3545; font-weight: bold;">[ERROR] ${data.message}</span>\n`;
                     outputContent.scrollTop = outputContent.scrollHeight;
                     showMainFixStatus('执行过程中出现错误', 'error');
                     break;
@@ -1444,34 +1578,33 @@
             }
         }
 
-        function filterPromptFromOutput(output) {
-            // 过滤掉 prompt 相关内容，只保留 codex 的回应
-            const lines = output.split('\n');
-            const filteredLines = [];
-            let isPromptSection = false;
+        function formatCodexOutput(output) {
+            // 格式化 Codex 输出，处理时间戳和其他格式
+            let formatted = output;
             
-            for (const line of lines) {
-                // 检测是否是 prompt 开始
-                if (line.includes('# CVL 验证失败修复任务') || 
-                    line.includes('## 任务概述') ||
-                    line.includes('╔═══════════════════════════════════════════════════════════════════════════════════╗')) {
-                    isPromptSection = true;
-                    continue;
-                }
-                
-                // 检测 prompt 结束，codex 开始回应
-                if (line.includes('请开始执行修复任务') || 
-                    line.match(/^\s*[#\d\.].*(?:步骤|分析|修复|检查)/)) {
-                    isPromptSection = false;
-                }
-                
-                // 如果不在 prompt 部分，添加到输出
-                if (!isPromptSection && line.trim()) {
-                    filteredLines.push(line);
-                }
-            }
+            // 处理时间戳格式 [YYYY-MM-DDTHH:MM:SS.xxxZ] 或 [时间戳]
+            formatted = formatted.replace(/(\[\d{4}-\d{2}-\d{2}T[\d:.Z]+\])/g, '\n<span style="color: #667eea; font-weight: bold;">$1</span>');
             
-            return filteredLines.join('\n');
+            // 处理其他常见的日志格式
+            formatted = formatted.replace(/\[INFO\]/g, '<span style="color: #28a745;">[INFO]</span>');
+            formatted = formatted.replace(/\[ERROR\]/g, '<span style="color: #dc3545;">[ERROR]</span>');
+            formatted = formatted.replace(/\[WARNING\]/g, '<span style="color: #ffc107;">[WARNING]</span>');
+            formatted = formatted.replace(/\[SUCCESS\]/g, '<span style="color: #20c997;">[SUCCESS]</span>');
+            
+            // 处理 exec、bash、codex 等命令标记
+            formatted = formatted.replace(/(\] (exec|bash|codex|thinking)\b)/gi, '<span style="color: #6c757d; font-style: italic;">$1</span>');
+            
+            // 处理 ➡️ ✅ ❌ 等特殊符号，使其更醒目
+            formatted = formatted.replace(/(➡️|✅|❌|⚠️)/g, '<span style="font-size: 1.2em;">$1</span>');
+            
+            // 处理规则名和步骤信息
+            formatted = formatted.replace(/(第\s*\d+\/\d+\s*项)/g, '<span style="color: #764ba2; font-weight: bold;">$1</span>');
+            formatted = formatted.replace(/(规则：[^\n]+)/g, '<span style="color: #667eea; font-weight: bold;">$1</span>');
+            
+            // 转换换行符为 HTML 换行
+            formatted = formatted.replace(/\n/g, '<br>');
+            
+            return formatted;
         }
 
         function showMainFixStatus(message, type = 'info') {

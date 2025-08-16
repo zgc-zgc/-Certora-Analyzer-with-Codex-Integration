@@ -1061,9 +1061,6 @@ THE CORE OF EFFICIENTLY HANDLING havoc - INDUCED FALSE POSITIVES LIES IN * REFIN
     *   ** BE CAUTIOUS WITH FILTERS IN INVARIANTS **: ALTHOUGH FILTERED BLOCKS CAN ALSO BE USED IN INVARIANTS, THIS PRACTICE SHOULD BE AVOIDED AS IT CAN LEAD TO UNSOUNDNESS.AN INVARIANT SHOULD HOLD UNDER ALL VALID OPERATIONS.IF A METHOD BREAKS AN INVARIANT, THE ISSUE SHOULD BE ADDRESSED BY ADDING VERIFIED ASSUMPTIONS IN A preserved BLOCK OR BY MODIFYING THE INVARIANT / CODE ITSELF, RATHER THAN SIMPLY EXCLUDING THE METHOD.
 \`\`\`
 
-## conclusion
-${formattedAnalyses.join('\n\n')}
-
 ## REMEDIATION STEPS
 
 CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
@@ -1088,16 +1085,23 @@ CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNE
             CRITICAL: PRIORITIZE THE USE OF INVARIANTS TO STRENGTHEN THE SPECIFICATION AND ELIMINATE CONTRADICTORY INITIAL STATES.AVOID USING require  OR  assume  UNLESS ABSOLUTELY NECESSARY, AS THEY CAN MASK CERTAIN SCENARIOS.
 
 ### STEP 4: SYNTAX CHECK & ITERATIVE FIXING
-            - UPON COMPLETION OF FIXES, IMMEDIATELY RUN THE  certoraRun *.conf  COMMAND TO CHECK THE SPEC SYNTAX.
-- IF SYNTAX ERRORS ARE FOUND, AUTOMATICALLY REPAIR THEM.
-- REPEATEDLY RUN  certoraRun *.conf  UNTIL NO SYNTAX ERRORS REMAIN.
-- ENSURE ALL MODIFIED SPEC FILES ARE SYNTACTICALLY CORRECT.
+            - UPON COMPLETION OF FIXES, DO NOT RUN certoraRun COMMAND.
+- ENSURE YOUR MODIFICATIONS ARE SYNTACTICALLY CORRECT THROUGH CODE REVIEW.
+- THE PROGRAM ORCHESTRATOR WILL RUN certoraRun AFTER ALL FIXES ARE COMPLETE.
 
 ### STEP 5: FINAL VERIFICATION (AFTER ALL ITEMS FIXED BY THE ORCHESTRATOR)
             - THE ORCHESTRATOR WILL RUN certoraRun *.conf AFTER ALL ITEMS ARE FIXED.
-- IF YOU NEED TO RUN SYNTAX CHECKS LOCALLY, DO SO AS PART OF YOUR SINGLE-ITEM FIX, THEN EXIT.
+- DO NOT RUN certoraRun YOURSELF. IF ERRORS OCCUR, THE ORCHESTRATOR WILL PROVIDE ERROR LOGS FOR YOU TO FIX.
 
-            PLEASE BEGIN THE REMEDIATION TASK FOR A SINGLE ITEM WHEN PROVIDED: `;
+            IMPORTANT: The orchestrator will pass exactly one finding per Codex run. Do NOT include or consider any other findings beyond the one provided by the orchestrator at runtime. 
+
+⚠️ CRITICAL RESTRICTIONS:
+- NEVER MODIFY any Solidity files (.sol) in the following directories: src/, contract/, contracts/
+- You MAY ONLY modify CVL specification files (.cvl) and Certora configuration files (.conf)
+- If you believe Solidity changes are absolutely necessary, STOP and explain why without making changes
+- DO NOT RUN certoraRun command yourself - the orchestrator will handle this
+
+PLEASE BEGIN THE REMEDIATION TASK FOR A SINGLE ITEM WHEN PROVIDED: `;
 
         res.json({
             success: true,
@@ -1270,8 +1274,9 @@ app.post('/fix-sequential-stream', async (req, res) => {
     };
     req.on('close', () => { aborted = true; killCurrent(); });
 
-    const spawnCodexOnce = async (promptText) => {
+    const spawnCodexOnce = async (promptText, ruleName = '修复任务') => {
         const { spawn } = await import('child_process');
+
         return new Promise((resolve) => {
             const args = [
                 'exec',
@@ -1285,7 +1290,7 @@ app.post('/fix-sequential-stream', async (req, res) => {
             }
             args.push(String(promptText || '').replace(/\0/g, ''));
 
-            send('启动 Codex 进行单项修复...', 'info');
+            send(`启动 Codex 进行修复：${ruleName}`, 'info');
             currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env }, detached: true });
 
             currentChild.stdout.on('data', (d) => send(d.toString(), 'output'));
@@ -1365,13 +1370,20 @@ ${item.text}
 ╚══════════════════════════════════════════════════════════════╝
 
 要求：
-- 仅修改与该项相关的代码/规范/配置；完成后退出。
+- 优先修改与该项相关的 CVL 规范（.cvl）与 Certora 配置（.conf）
+- ⚠️ 严禁修改以下目录中的 Solidity 文件（.sol）：src/, contract/, contracts/
+- 如果你认为必须修改 Solidity 文件，请停止并解释原因，而不要进行修改
 - 如需执行命令，请直接执行并确保无语法错误。
-- 不要处理未提及的其它问题。
+- 不要运行 certoraRun 命令 - 程序会在所有修复完成后自动运行
+- 不要处理未提及的其它问题；完成本项后立即退出 Codex。
 现在开始。`;
 
-            const ok = await spawnCodexOnce(perPrompt);
-            if (!ok && aborted) break;
+            const ok = await spawnCodexOnce(perPrompt, item.ruleName);
+            if (!ok) {
+                if (aborted) break;
+                send(`❌ 第 ${i + 1} 项修复失败，已停止顺序修复。`, 'error');
+                break;
+            }
             send(`✅ 第 ${i + 1} 项修复完成`, 'success');
         }
 
@@ -1385,27 +1397,33 @@ ${item.text}
         if (confPath && String(confPath).trim()) {
             send('全部修复完成，开始运行 certoraRun ...', 'info');
 
-            const maxAttempts = 5; // 安全上限，避免无限循环
             let attempt = 0;
             while (!aborted) {
                 attempt++;
-                send(`certoraRun 尝试 ${attempt}/${maxAttempts}`, 'info');
+                send(`certoraRun 尝试 ${attempt}`, 'info');
                 const result = await runCertora();
                 if (result.success) break;
-
-                if (attempt >= maxAttempts) {
-                    send('达到最大重试次数，停止自动修复。', 'error');
-                    break;
-                }
 
                 // 将失败信息交给 Codex 修复
                 const failurePrompt = `${String(basePrompt || '')}
 
-certoraRun 失败，以下为完整日志（stdout+stderr）。请分析根因并修复配置/规范/代码，使 certoraRun 能成功并返回验证URL。修复后退出：
+certoraRun 失败，以下为完整日志（stdout+stderr）。
+⚠️ 重要限制：
+- 请仅在 CVL 规范（.cvl）与 Certora 配置（.conf）中进行修复
+- 严禁修改以下目录中的 Solidity 文件（.sol）：src/, contract/, contracts/
+- 如你认为必须改动 Solidity 源码，请停止并返回理由
+- 目标是让 certoraRun 成功并返回验证URL
+- 不要自己运行 certoraRun 命令
+完成修复后立即退出：
 \n\n${result.output.slice(-8000)}\n\n`;
 
                 send('certoraRun 失败，发送日志给 Codex 进行修复 ...', 'info');
-                await spawnCodexOnce(failurePrompt);
+                const fixOk = await spawnCodexOnce(failurePrompt, 'certoraRun 错误修复');
+                if (!fixOk) {
+                    if (aborted) break;
+                    send('❌ 自动修复被禁止改动或失败，停止重试。', 'error');
+                    break;
+                }
             }
         } else {
             send('未提供 conf 路径，跳过 certoraRun', 'info');
