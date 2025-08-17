@@ -246,28 +246,22 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
             return;
         }
 
-        const failedRules = collectFailedRuleOutputs(progressData, runInfo, [], '');
+        // 正确传入空数组作为路径累积容器，避免字符串 concat/join 异常
+        const failedRules = collectFailedRuleOutputs(progressData, runInfo, [], []);
         sendProgress(`找到 ${failedRules.length} 个需要分析的规则（VIOLATED和SANITY_FAILED），正在获取JSON内容...`);
 
         const results = [];
         for (const rule of failedRules) {
             try {
                 sendProgress(`获取 ${rule.outputFile}...`);
-                const jsonResponse = await page.goto(rule.jsonUrl, { waitUntil: 'networkidle' });
-                const jsonText = await jsonResponse.text();
-                const jsonContent = JSON.parse(jsonText);
-
-                results.push({
-                    ...rule,
-                    content: jsonContent
-                });
+                // 使用 node-fetch 直接请求已构造的 JSON URL（字段名为 url）
+                const resp = await fetch(rule.url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const jsonContent = await resp.json();
+                results.push({ ...rule, content: jsonContent });
             } catch (jsonError) {
                 console.log(`获取${rule.outputFile}失败:`, jsonError.message);
-                results.push({
-                    ...rule,
-                    content: null,
-                    error: jsonError.message
-                });
+                results.push({ ...rule, content: null, error: jsonError.message });
             }
         }
 
@@ -1254,7 +1248,8 @@ app.post('/fix-sequential-stream', async (req, res) => {
         } catch {}
     };
 
-    let aborted = false;
+    let aborted = false; // 仅用于显式停止（不再由连接关闭自动赋值）
+    let clientDisconnected = false; // 记录客户端是否断开，但不中断修复流程
     let currentChild = null;
     const killCurrent = () => {
         try {
@@ -1272,7 +1267,7 @@ app.post('/fix-sequential-stream', async (req, res) => {
             }
         } catch {}
     };
-    req.on('close', () => { aborted = true; killCurrent(); });
+    req.on('close', () => { clientDisconnected = true; killCurrent(); });
 
     const spawnCodexOnce = async (promptText, ruleName = '修复任务') => {
         const { spawn } = await import('child_process');
@@ -1291,11 +1286,17 @@ app.post('/fix-sequential-stream', async (req, res) => {
             args.push(String(promptText || '').replace(/\0/g, ''));
 
             send(`启动 Codex 进行修复：${ruleName}`, 'info');
-            currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env }, detached: true });
+            // 取消 detached，避免子进程与请求生命周期脱离导致SSE提前结束
+            currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
 
             currentChild.stdout.on('data', (d) => send(d.toString(), 'output'));
             currentChild.stderr.on('data', (d) => send(d.toString(), 'error'));
-            currentChild.on('error', (e) => send(`进程错误: ${e.message}`, 'error'));
+            currentChild.on('error', (e) => {
+                send(`进程错误: ${e.message}`, 'error');
+                try { currentChild && currentChild.kill('SIGTERM'); } catch {}
+                currentChild = null;
+                return resolve(false);
+            });
             currentChild.on('close', (code) => {
                 currentChild = null;
                 send(`Codex 退出: ${code}`, code === 0 ? 'success' : 'error');
@@ -1318,12 +1319,15 @@ app.post('/fix-sequential-stream', async (req, res) => {
             if (projectPath && String(projectPath).trim()) spawnOpts.cwd = String(projectPath).trim();
 
             send(`运行: certoraRun ${args.join(' ')}`, 'info');
+            // 不使用 detached，保持与请求同生命周期
             currentChild = spawn(cmd, args, spawnOpts);
             let out = '';
             let err = '';
             currentChild.stdout.on('data', (d) => { const s = d.toString(); out += s; send(s, 'output'); });
             currentChild.stderr.on('data', (d) => { const s = d.toString(); err += s; send(s, 'output'); });
-            currentChild.on('error', (e) => { send(`certoraRun 进程错误: ${e.message}`, 'error'); });
+            currentChild.on('error', (e) => {
+                send(`certoraRun 进程错误: ${e.message}`, 'error');
+            });
             currentChild.on('close', () => {
                 currentChild = null;
                 const combined = `${out}\n${err}`;
@@ -1354,11 +1358,21 @@ app.post('/fix-sequential-stream', async (req, res) => {
             return { text: String(a || ''), ruleName: `Item ${i + 1}` };
         });
 
+        // 调试信息：显示每个项目的规则名
+        send(`📋 待修复项目列表：`, 'info');
+        items.forEach((item, index) => {
+            send(`  ${index + 1}. ${item.ruleName}`, 'info');
+        });
+
         // 逐项修复
         for (let i = 0; i < items.length; i++) {
-            if (aborted) break;
+            if (aborted) {
+                send(`⚠️ 检测到中止信号，停止修复`, 'info');
+                break;
+            }
             const item = items[i];
             send(`➡️ 开始修复第 ${i + 1}/${items.length} 项：${item.ruleName}`, 'info');
+            send(`===== 开始修复第 ${i + 1}/${items.length} 项：${item.ruleName} =====\n`, 'output');
 
             const perPrompt = `${String(basePrompt || '')}
 
@@ -1378,14 +1392,31 @@ ${item.text}
 - 不要处理未提及的其它问题；完成本项后立即退出 Codex。
 现在开始。`;
 
+            send(`🔧 调用 Codex 修复第 ${i + 1} 项...`, 'info');
             const ok = await spawnCodexOnce(perPrompt, item.ruleName);
+            send(`📋 第 ${i + 1} 项修复结果: ${ok ? '成功' : '失败'}`, 'info');
+            send(`===== 完成第 ${i + 1}/${items.length} 项：${ok ? '成功' : '失败'} =====\n`, 'output');
+            
             if (!ok) {
-                if (aborted) break;
-                send(`❌ 第 ${i + 1} 项修复失败，已停止顺序修复。`, 'error');
-                break;
+                if (aborted) {
+                    send(`⚠️ 修复过程中检测到中止信号`, 'info');
+                    break;
+                }
+                send(`❌ 第 ${i + 1} 项修复失败，继续下一项`, 'error');
+                // 不要 break，继续执行下一项修复
+            } else {
+                send(`✅ 第 ${i + 1} 项修复完成`, 'success');
             }
-            send(`✅ 第 ${i + 1} 项修复完成`, 'success');
+            if (i + 1 < items.length) {
+                send(`⏭️ 准备进入下一项：第 ${i + 2}/${items.length}`, 'info');
+                send(`⏭️ 下一项：第 ${i + 2}/${items.length}\n`, 'output');
+            }
+            send(`🔄 循环状态: i=${i}, items.length=${items.length}, aborted=${aborted}`, 'info');
+            send(`🔄 循环状态: i=${i}, items.length=${items.length}, aborted=${aborted}\n`, 'output');
         }
+        
+        send(`🏁 修复循环结束，共处理 ${items.length} 项`, 'info');
+        send(`🏁 修复循环结束，共处理 ${items.length} 项\n`, 'output');
 
         if (aborted) {
             send('顺序修复被中止', 'info');
@@ -1395,38 +1426,69 @@ ${item.text}
 
         // 修复完成后执行 certoraRun（如提供 confPath）
         if (confPath && String(confPath).trim()) {
-            send('全部修复完成，开始运行 certoraRun ...', 'info');
+            send('✅ 全部修复完成，开始运行 certoraRun 检查语法 ...', 'info');
+            send('✅ 开始运行 certoraRun 检查语法 ...\n', 'output');
 
             let attempt = 0;
+            // 无限重试直至成功或被用户中止；仅对“语法类错误”自动进入修复-重试循环
             while (!aborted) {
                 attempt++;
-                send(`certoraRun 尝试 ${attempt}`, 'info');
+                send(`🔄 certoraRun 第 ${attempt} 次尝试`, 'info');
+                send(`🔄 certoraRun 第 ${attempt} 次尝试\n`, 'output');
+
                 const result = await runCertora();
-                if (result.success) break;
 
-                // 将失败信息交给 Codex 修复
-                const failurePrompt = `${String(basePrompt || '')}
+                if (result.success) {
+                    send('✅ certoraRun 成功！已获得验证 URL', 'success');
+                    break;
+                }
 
-certoraRun 失败，以下为完整日志（stdout+stderr）。
+                // 分析错误类型
+                const lower = result.output.toLowerCase();
+                const hasSyntaxError = lower.includes('syntax error') || lower.includes('parse error') || lower.includes('compilation error');
+
+                if (hasSyntaxError) {
+                    send('❌ certoraRun 检测到语法错误，发送给 Codex 修复...', 'error');
+                    send('❌ certoraRun 语法错误，交由 Codex 修复\n', 'output');
+
+                    const failurePrompt = `语法错误修复任务：
+
+certoraRun 检测到语法错误，以下为完整日志：
+
 ⚠️ 重要限制：
 - 请仅在 CVL 规范（.cvl）与 Certora 配置（.conf）中进行修复
 - 严禁修改以下目录中的 Solidity 文件（.sol）：src/, contract/, contracts/
 - 如你认为必须改动 Solidity 源码，请停止并返回理由
-- 目标是让 certoraRun 成功并返回验证URL
+- 目标是修复语法错误，让 certoraRun 成功
 - 不要自己运行 certoraRun 命令
-完成修复后立即退出：
-\n\n${result.output.slice(-8000)}\n\n`;
+- 修复完成后立即退出
 
-                send('certoraRun 失败，发送日志给 Codex 进行修复 ...', 'info');
-                const fixOk = await spawnCodexOnce(failurePrompt, 'certoraRun 错误修复');
-                if (!fixOk) {
-                    if (aborted) break;
-                    send('❌ 自动修复被禁止改动或失败，停止重试。', 'error');
-                    break;
+错误日志：
+${result.output.slice(-8000)}
+`;
+
+                    const fixOk = await spawnCodexOnce(failurePrompt, '语法错误修复');
+                    if (!fixOk) {
+                        if (aborted) break;
+                        // 修复失败不终止全局流程，但会进入下一次 certoraRun 重试（仍无限次，直到手动中止或成功）
+                        send('❌ Codex 修复语法错误失败，将继续重试 certoraRun', 'error');
+                        send('❌ Codex 修复语法错误失败，将继续重试 certoraRun\n', 'output');
+                    } else {
+                        send('✅ Codex 已尝试修复语法错误', 'success');
+                        send('✅ Codex 已尝试修复语法错误\n', 'output');
+                    }
+                    // 循环继续，进入下一次 certoraRun 以验证修复
+                    continue;
                 }
+
+                // 非语法错误：通常为逻辑失败、约束不一致、超时等，避免无意义的无限重试
+                send('⚠️ certoraRun 失败（非语法错误），详情见日志', 'error');
+                send(result.output.slice(-2000), 'output');
+                break;
             }
         } else {
-            send('未提供 conf 路径，跳过 certoraRun', 'info');
+            send('⚠️ 未提供 conf 路径，跳过 certoraRun', 'info');
+            send('⚠️ 未提供 conf 路径，跳过 certoraRun\n', 'output');
         }
 
         send('顺序修复流程完成', 'success');
@@ -1435,6 +1497,7 @@ certoraRun 失败，以下为完整日志（stdout+stderr）。
 
     } catch (e) {
         send(`顺序修复出错: ${e.message}`, 'error');
+        if (e && e.stack) send(e.stack, 'output');
         res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
         res.end();
     }

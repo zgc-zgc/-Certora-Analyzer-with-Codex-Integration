@@ -887,6 +887,8 @@
                         <div style="position: relative;">
                             <textarea class="codex-analysis" 
                                       id="analysis-${rule.outputFile}" 
+                                      data-output-file="${rule.outputFile}"
+                                      data-rule-name="${rule.displayName}"
                                       placeholder="点击分析按钮获取Codex分析结果..."
                                       onclick="expandCodexAnalysis('${rule.outputFile}')"
                                       readonly></textarea>
@@ -1331,25 +1333,33 @@
         }
 
         async function fixAll() {
+            // 仅修复“已有分析结论”的项；不会自动触发批量分析
             const analyses = [];
 
-            // 将分析结果与对应规则名配对
-            processedRules.forEach(rule => {
-                const ta = document.getElementById(`analysis-${rule.outputFile}`);
-                if (ta && ta.value && ta.value !== '' && !ta.value.includes('分析中...')) {
-                    analyses.push({ text: ta.value, ruleName: rule.displayName });
-                }
+            // 优先从DOM中收集，避免因ID冲突或processedRules不一致导致漏收
+            const tas = Array.from(document.querySelectorAll('textarea.codex-analysis'));
+            tas.forEach(ta => {
+                const val = (ta.value || '').trim();
+                if (!val) return;
+                if (val.includes('分析中...') || val.includes('批量分析已停止') || val.startsWith('重试中...')) return;
+                if (val.length < 3) return;
+                if (/点击分析按钮/.test(val)) return;
+
+                const ruleName = ta.dataset.ruleName || '';
+                analyses.push({ text: val, ruleName });
             });
 
             if (analyses.length === 0) {
-                showStatus('没有可用的分析结果', 'error');
+                showStatus('没有可用的分析结果，只有完成 Codex 分析的项才会进入修复', 'error');
                 return;
             }
 
             // 缓存到全局，供顺序修复使用
             lastFixAnalyses = analyses;
 
-            showStatus(`正在生成修复 prompt（共 ${analyses.length} 个分析结果）...`, 'info');
+            // 将选中条目列表也展示出来，便于用户核对
+            const namesPreview = analyses.map((a, i) => `${i + 1}. ${a.ruleName || '(未命名规则)'}`).join('；');
+            showStatus(`正在生成修复 prompt（共 ${analyses.length} 项）：${namesPreview}`, 'info');
 
             try {
                 // 第一步：生成 prompt
@@ -1547,6 +1557,9 @@
             switch (data.type) {
                 case 'info':
                     showMainFixStatus(data.message, 'info');
+                    // 同步写入日志区域，避免用户遗漏顶部状态栏
+                    outputContent.innerHTML += `<span style="color:#0d6efd;">[INFO]</span> ${escapeHtml(data.message)}<br>`;
+                    outputContent.scrollTop = outputContent.scrollHeight;
                     break;
                 case 'output':
                     // 格式化输出，处理时间戳换行
@@ -1569,6 +1582,8 @@
                     break;
                 case 'success':
                     showMainFixStatus(data.message, 'success');
+                    outputContent.innerHTML += `<span style="color:#20c997;">[SUCCESS]</span> ${escapeHtml(data.message)}<br>`;
+                    outputContent.scrollTop = outputContent.scrollHeight;
                     break;
                 case 'complete':
                     showMainFixStatus('修复任务执行完成', 'success');
@@ -1576,6 +1591,16 @@
                     document.getElementById('main-fix-controls').style.display = 'none';
                     break;
             }
+        }
+
+        // 简单转义，防止日志中的HTML破坏输出
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function formatCodexOutput(output) {
