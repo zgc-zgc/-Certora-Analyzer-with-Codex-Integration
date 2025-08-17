@@ -581,22 +581,50 @@
                 </div>
 
                 <div style="margin: 0 0 20px 0;">
-                    <label for="certora-conf-path" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
-                        ⚙️ certoraRun 配置文件路径（.conf）：
+                    <label for="certora-conf-select" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
+                        ⚙️ certoraRun 配置文件（从 <workdir>/certora/conf 自动发现 .conf）：
                     </label>
-                    <input type="text" id="certora-conf-path"
-                           placeholder="./certora/conf/my_config.conf"
-                           value=""
-                           style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
-                                  font-family: 'Courier New', monospace; font-size: 14px;">
-                    <small style="color: #6c757d; display: block; margin-top: 5px;">
-                        💡 修复完成后将运行 certoraRun <该路径>，并在成功时显示验证链接。
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select id="certora-conf-select" style="flex: 1; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 14px;">
+                            <option value="">（未加载，输入或更改上方项目路径以自动加载）</option>
+                        </select>
+                        <button class="btn btn-primary" id="reload-conf-btn" type="button" style="padding: 10px 16px;">🔄 刷新</button>
+                    </div>
+                    <small id="conf-help" style="color: #6c757d; display: block; margin-top: 5px;">
+                        💡 会列出 <workdir>/certora/conf 目录下的 .conf 文件；若找不到，可手动在该目录放置 .conf 并点击刷新。
                     </small>
+                    <!-- 兼容旧逻辑：隐藏的文本输入，仅当无选择时作为回退 -->
+                    <input type="text" id="certora-conf-path" style="display:none;">
                 </div>
 
                 <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
                     🔍 获取验证数据
                 </button>
+                <script>
+                    // 页面加载后尝试根据默认的项目路径初始化 conf 下拉
+                    window.addEventListener('DOMContentLoaded', () => {
+                        const projectInput = document.getElementById('project-path-main');
+                        if (projectInput && projectInput.value.trim()) {
+                            loadConfOptions();
+                        }
+                        const reloadBtn = document.getElementById('reload-conf-btn');
+                        if (reloadBtn) {
+                            reloadBtn.addEventListener('click', loadConfOptions);
+                        }
+                        if (projectInput) {
+                            // 当用户修改项目路径时，自动刷新 conf 列表（防抖）
+                            let t = null;
+                            projectInput.addEventListener('input', () => {
+                                if (t) clearTimeout(t);
+                                t = setTimeout(loadConfOptions, 400);
+                            });
+                            projectInput.addEventListener('change', () => {
+                                if (t) clearTimeout(t);
+                                loadConfOptions();
+                            });
+                        }
+                    });
+                </script>
 
                 <div id="status-message"></div>
             </div>
@@ -711,6 +739,42 @@
         const analysisControllers = new Map(); // 为每个分析维护独立的控制器
         let lastFixAnalyses = []; // 顺序修复用的分析结果缓存
         let fixAbortController = null; // 顺序修复的控制器（用于暂停/终止）
+
+        // 加载 <workdir>/certora/conf 下的 .conf 到下拉框
+        async function loadConfOptions() {
+            try {
+                const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
+                const select = document.getElementById('certora-conf-select');
+                const help = document.getElementById('conf-help');
+                if (!projectPath) {
+                    select.innerHTML = '<option value="">（请先填写上方项目路径）</option>';
+                    return;
+                }
+                select.innerHTML = '<option value="">（加载中…）</option>';
+                const resp = await fetch('http://localhost:3002/list-conf?projectPath=' + encodeURIComponent(projectPath));
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.error || '加载失败');
+
+                const files = Array.isArray(data.files) ? data.files : [];
+                if (files.length === 0) {
+                    select.innerHTML = '<option value="">（未在 ' + (data.baseDir || (projectPath + '/certora/conf')) + ' 找到 .conf）</option>';
+                    return;
+                }
+                // 填充选项（显示相对路径，值为绝对路径方便后端）
+                select.innerHTML = '';
+                files.sort((a,b) => a.relPath.localeCompare(b.relPath));
+                for (const f of files) {
+                    const opt = document.createElement('option');
+                    opt.value = f.fullPath;
+                    opt.textContent = f.relPath;
+                    select.appendChild(opt);
+                }
+            } catch (e) {
+                const select = document.getElementById('certora-conf-select');
+                select.innerHTML = '<option value="">（加载失败：' + (e.message || e) + '）</option>';
+            }
+        }
 
         // 处理 Codex 输出，只保留最终回答
         function extractCodexAnswer(fullOutput) {
@@ -889,16 +953,8 @@
                                       id="analysis-${rule.outputFile}" 
                                       data-output-file="${rule.outputFile}"
                                       data-rule-name="${rule.displayName}"
-                                      placeholder="点击分析按钮获取Codex分析结果..."
-                                      onclick="expandCodexAnalysis('${rule.outputFile}')"
-                                      readonly></textarea>
+                                      placeholder="可直接在此编辑 Codex 分析结果（或先点击分析）"></textarea>
                             <div style="display: flex; gap: 5px; position: absolute; top: 5px; right: 5px;">
-                                <button class="edit-btn-small" 
-                                        id="edit-btn-${rule.outputFile}"
-                                        onclick="toggleEditMode('${rule.outputFile}')"
-                                        title="编辑">
-                                    ✏️
-                                </button>
                                 <button class="copy-btn-small" 
                                         onclick="copyCodexAnalysis('${rule.outputFile}')"
                                         title="复制">
@@ -924,49 +980,7 @@
             document.getElementById('result-section').style.display = 'block';
         }
 
-        function toggleEditMode(outputFile) {
-            const textarea = document.getElementById(`analysis-${outputFile}`);
-            const editBtn = document.getElementById(`edit-btn-${outputFile}`);
-            
-            if (textarea.readOnly) {
-                // 进入编辑模式
-                textarea.readOnly = false;
-                textarea.style.backgroundColor = '#fffef0';
-                textarea.style.border = '2px solid #667eea';
-                editBtn.textContent = '✅'; // 保存图标
-                editBtn.title = '保存';
-                
-                // 禁用点击展开功能
-                textarea.onclick = null;
-                
-                showStatus('已进入编辑模式，可以修改分析结果', 'info');
-            } else {
-                // 保存并退出编辑模式
-                textarea.readOnly = true;
-                textarea.style.backgroundColor = '';
-                textarea.style.border = '';
-                editBtn.textContent = '✏️'; // 编辑图标
-                editBtn.title = '编辑';
-                
-                // 恢复点击展开功能
-                textarea.onclick = () => expandCodexAnalysis(outputFile);
-                
-                showStatus('分析结果已保存', 'success');
-            }
-        }
-
-        function expandCodexAnalysis(outputFile) {
-            const textarea = document.getElementById(`analysis-${outputFile}`);
-            if (textarea.readOnly && textarea.value && textarea.value !== '' && !textarea.value.includes('分析中...')) {
-                document.getElementById('codex-modal-title').textContent = 'Codex 分析详情';
-                document.getElementById('codex-modal-content').textContent = textarea.value;
-                document.getElementById('codex-modal').style.display = 'block';
-            }
-        }
-
-        function closeCodexModal() {
-            document.getElementById('codex-modal').style.display = 'none';
-        }
+        // 预览区直接可编辑，无需切换编辑模式或弹窗
 
         function formatRuleName(name) {
             const parts = name.split(' > ');
@@ -1206,9 +1220,7 @@
                     }
                     // 仅展示最终结果（头部信息只在开始时显示，不混入最终内容）
                     textarea.value = finalContent;
-                    
-                    // 移除 readonly，使其可编辑
-                    textarea.readOnly = false;
+                    // 预览区默认可编辑，无需再切换
                     console.log(`流式分析成功: ${outputFile}`);
                     break;
                     
@@ -1391,7 +1403,11 @@
 
         async function executeFixDirectly(prompt) {
             const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
-            const confPath = (document.getElementById('certora-conf-path')?.value || '').trim();
+            const confPath = (
+                document.getElementById('certora-conf-select')?.value ||
+                document.getElementById('certora-conf-path')?.value ||
+                ''
+            ).trim();
             
             if (!prompt) {
                 showStatus('修复 prompt 为空', 'error');
@@ -1471,7 +1487,11 @@
         async function executeFixWithPrompt() {
             const prompt = document.getElementById('fix-prompt-editor').value.trim();
             const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
-            const confPath = (document.getElementById('certora-conf-path')?.value || '').trim();
+            const confPath = (
+                document.getElementById('certora-conf-select')?.value ||
+                document.getElementById('certora-conf-path')?.value ||
+                ''
+            ).trim();
             
             if (!prompt) {
                 showFixStatus('请输入修复 prompt', 'error');

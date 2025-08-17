@@ -2,6 +2,8 @@ import { chromium } from 'playwright';
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
+import fs from 'fs';
+import path from 'path';
 
 const app = express();
 app.use(cors());
@@ -1696,4 +1698,40 @@ app.listen(PORT, () => {
 ║     服务运行在: http://localhost:${PORT}    ║
 ╚════════════════════════════════════════════╝
         `);
+});
+// 新增：列出 <projectPath>/certora/conf 下的 .conf 文件
+app.get('/list-conf', async (req, res) => {
+    try {
+        const projectPath = String(req.query.projectPath || '').trim();
+        if (!projectPath) {
+            return res.status(400).json({ success: false, error: '缺少 projectPath' });
+        }
+
+        const baseDir = path.resolve(projectPath, 'certora', 'conf');
+        const result = [];
+
+        const walk = (dir, depth = 0, maxDepth = 3) => {
+            if (depth > maxDepth) return;
+            let entries = [];
+            try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+            for (const ent of entries) {
+                const full = path.join(dir, ent.name);
+                if (ent.isDirectory()) {
+                    walk(full, depth + 1, maxDepth);
+                } else if (ent.isFile() && ent.name.endsWith('.conf')) {
+                    result.push({
+                        name: ent.name,
+                        relPath: path.relative(projectPath, full),
+                        fullPath: full
+                    });
+                }
+            }
+        };
+
+        walk(baseDir);
+
+        return res.json({ success: true, baseDir, count: result.length, files: result });
+    } catch (e) {
+        return res.status(500).json({ success: false, error: e.message });
+    }
 });
