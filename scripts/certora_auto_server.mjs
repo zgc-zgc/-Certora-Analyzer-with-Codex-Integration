@@ -7,12 +7,19 @@ import path from 'path';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '100mb' }));  // 增加请求体大小限制到 100MB
-app.use(express.urlencoded({ limit: '100mb', extended: true })); // 同样增加表单数据限制
+app.use(express.json({ limit: '100mb' }));  // Increase request body size limit to 100MB
+app.use(express.urlencoded({ limit: '100mb', extended: true })); // Also increase form data limit
 
-// 处理 Codex 输出，只保留最终回答
+// Track the currently running child process (Codex or certoraRun)
+let currentChild = null;
+// Global abort flag for sequential fix flow
+let globalFixAbort = false;
+// Whether a sequential fix is currently running
+let activeFixRunning = false;
+
+// Process Codex output, extract only the final answer
 function extractCodexAnswer(fullOutput) {
-    // 从最后一个 tokens used: 回溯，找到最近一个非空候选块
+    // Trace back from the last "tokens used:" to find the most recent non-empty candidate block
     const lines = fullOutput.split('\n');
     const tokenIdxs = [];
     for (let i = 0; i < lines.length; i++) {
@@ -28,7 +35,7 @@ function extractCodexAnswer(fullOutput) {
 
     for (let k = tokenIdxs.length - 1; k >= 0; k--) {
         const t = tokenIdxs[k];
-        // 找到 t 之前最近的时间戳行
+        // Find the most recent timestamp line before t
         let s = -1;
         for (let i = t - 1; i >= 0; i--) {
             if (/^\[[\d\-T:\.Z]+\]/.test(lines[i])) { s = i; break; }
@@ -38,13 +45,13 @@ function extractCodexAnswer(fullOutput) {
         if (filtered) return filtered;
     }
 
-    // 尝试从 "Final answer:" 标记提取
-    const finalIdx = lines.findIndex(l => /^(Final answer|最终答案)\s*:/i.test(l));
+    // Try to extract from "Final answer:" marker
+    const finalIdx = lines.findIndex(l => /^(Final answer|Final answer)\s*:/i.test(l));
     if (finalIdx !== -1) {
         return lines.slice(finalIdx + 1).join('\n').trim();
     }
 
-    // 回退：从最后一个 "User instructions:" 之后开始，过滤明显的系统行
+    // Fallback: start from the last "User instructions:" and filter obvious system lines
     let userInstrIdx = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
         if (lines[i].includes('User instructions:')) { userInstrIdx = i; break; }
@@ -55,7 +62,7 @@ function extractCodexAnswer(fullOutput) {
     return candidate || fullOutput;
 }
 
-// 过滤 Codex 输出，移除prompt回显和系统信息
+// Filter Codex output, remove prompt echo and system information
 function filterCodexOutput(output) {
     const lines = output.split('\n');
     const filteredLines = [];
@@ -63,36 +70,36 @@ function filterCodexOutput(output) {
     let inPromptSection = false;
 
     for (const line of lines) {
-        // 系统信息阶段 - 保留到 "User instructions:" 之前的所有内容
+        // System info phase - keep all content before "User instructions:"
         if (inSystemInfo) {
             if (line.includes('User instructions:')) {
                 inSystemInfo = false;
                 inPromptSection = true;
-                continue; // 跳过 "User instructions:" 这一行
+                continue; // Skip the "User instructions:" line
             }
-            // 保留系统信息
+            // Keep system information
             filteredLines.push(line);
             continue;
         }
 
-        // 检测prompt结束，开始实际分析
+        // Detect prompt end, start actual analysis
         if (inPromptSection) {
-            // 检测prompt结束（通常是开始实际分析的地方）
-            if (line.match(/^(根据|基于|分析|这个|我来|让我|首先|## |### |\*\*|# )/)) {
+            // Detect prompt end (usually where actual analysis begins)
+            if (line.match(/^(Based on|According to|Analysis|This|Let me|First|## |### |\*\*|# )/)) {
                 inPromptSection = false;
-                filteredLines.push(line); // 包含这行分析开始的内容
+                filteredLines.push(line); // Include this analysis start line
             }
-            // 在prompt阶段，跳过所有内容
+            // During prompt phase, skip all content
             continue;
         }
 
-        // 跳过其他系统信息行（如tokens used等）
+        // Skip other system info lines (like tokens used, etc.)
         if (line.includes('[') && line.includes(']') &&
             (line.includes('codex') || line.includes('tokens used'))) {
             continue;
         }
 
-        // 保留实际的分析内容
+        // Keep actual analysis content
         filteredLines.push(line);
     }
 
@@ -148,10 +155,10 @@ function collectFailedRuleOutputs(node, runInfo, results = [], currentPath = [])
     const children = Array.isArray(node.children) ? node.children : [];
     const nextPath = currentPath.concat(name);
 
-    // 原来的逻辑：收集所有非VERIFIED状态的规则
+    // Original logic: collect all non-VERIFIED rules
     // if (status && status !== 'VERIFIED' && output.length > 0) {
-    
-    // 新逻辑：只收集VIOLATED和SANITY_FAILED状态的规则
+
+    // New logic: only collect VIOLATED and SANITY_FAILED rules
     if (status && (status === 'VIOLATED' || status === 'SANITY_FAILED') && output.length > 0) {
         for (const outputFile of output) {
             if (typeof outputFile === 'string' && /^rule_output_\d+\.json$/.test(outputFile)) {
@@ -180,15 +187,15 @@ function collectFailedRuleOutputs(node, runInfo, results = [], currentPath = [])
     return results;
 }
 
-// 主要端点：分析URL并返回所有JSON内容（支持实时进度）
+// Main endpoint: analyze URL and return all JSON content (with real-time progress)
 app.post('/analyze-and-fetch-stream', async (req, res) => {
     const { url } = req.body;
 
     if (!url) {
-        return res.status(400).json({ error: '请提供URL' });
+        return res.status(400).json({ error: 'Please provide URL' });
     }
 
-    // 设置SSE响应头
+    // Set SSE response headers
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -202,8 +209,8 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
     };
 
     try {
-        sendProgress(`分析URL: ${url}`);
-        console.log('分析URL:', url);
+        sendProgress(`Analyzing URL: ${url}`);
+        console.log('Analyzing URL:', url);
         const runInfo = parseRunInfo(url);
 
         const browser = await chromium.launch({ headless: true });
@@ -214,7 +221,7 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
 
         let progressData = null;
 
-        sendProgress('访问页面...');
+        sendProgress('Accessing page...');
 
         page.on('response', async (response) => {
             try {
@@ -226,14 +233,14 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
                     if (text && text.trim() !== '') {
                         try {
                             progressData = JSON.parse(text);
-                            sendProgress('找到progress数据');
+                            sendProgress('Found progress data');
                         } catch (parseError) {
-                            console.log('Progress响应解析失败:', parseError.message);
+                            console.log('Progress response parse failed:', parseError.message);
                         }
                     }
                 }
             } catch (responseError) {
-                console.log('响应处理错误:', responseError.message);
+                console.log('Response processing error:', responseError.message);
             }
         });
 
@@ -241,28 +248,28 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
         await page.waitForTimeout(3000);
 
         if (!progressData) {
-            sendProgress('未找到progress数据', 'error');
-            res.write(`data: ${JSON.stringify({ type: 'error', message: '未找到progress数据' })}\n\n`);
+            sendProgress('Progress data not found', 'error');
+            res.write(`data: ${JSON.stringify({ type: 'error', message: 'Progress data not found' })}\n\n`);
             res.end();
             await browser.close();
             return;
         }
 
-        // 正确传入空数组作为路径累积容器，避免字符串 concat/join 异常
+        // Correctly pass empty array as path accumulator to avoid string concat/join errors
         const failedRules = collectFailedRuleOutputs(progressData, runInfo, [], []);
-        sendProgress(`找到 ${failedRules.length} 个需要分析的规则（VIOLATED和SANITY_FAILED），正在获取JSON内容...`);
+        sendProgress(`Found ${failedRules.length} rules to analyze (VIOLATED and SANITY_FAILED), fetching JSON content...`);
 
         const results = [];
         for (const rule of failedRules) {
             try {
-                sendProgress(`获取 ${rule.outputFile}...`);
-                // 使用 node-fetch 直接请求已构造的 JSON URL（字段名为 url）
+                sendProgress(`Fetching ${rule.outputFile}...`);
+                // Use node-fetch to directly request the constructed JSON URL (field name is url)
                 const resp = await fetch(rule.url);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const jsonContent = await resp.json();
                 results.push({ ...rule, content: jsonContent });
             } catch (jsonError) {
-                console.log(`获取${rule.outputFile}失败:`, jsonError.message);
+                console.log(`Failed to fetch ${rule.outputFile}:`, jsonError.message);
                 results.push({ ...rule, content: null, error: jsonError.message });
             }
         }
@@ -276,27 +283,27 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
             rules: results
         };
 
-        sendProgress('分析完成！', 'success');
+        sendProgress('Analysis complete!', 'success');
         res.write(`data: ${JSON.stringify({ type: 'complete', data: response })}\n\n`);
         res.end();
 
     } catch (error) {
-        console.error('处理错误:', error);
-        sendProgress(`错误: ${error.message}`, 'error');
+        console.error('Processing error:', error);
+        sendProgress(`Error: ${error.message}`, 'error');
         res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
         res.end();
     }
 });
 
-// 主要端点：分析URL并返回所有JSON内容
+// Main endpoint: analyze URL and return all JSON content
 app.post('/analyze-and-fetch', async (req, res) => {
     const { url } = req.body;
 
     if (!url) {
-        return res.status(400).json({ error: '请提供URL' });
+        return res.status(400).json({ error: 'Please provide URL' });
     }
 
-    console.log('分析URL:', url);
+    console.log('Analyzing URL:', url);
     const runInfo = parseRunInfo(url);
 
     const browser = await chromium.launch({ headless: true });
@@ -321,7 +328,7 @@ app.post('/analyze-and-fetch', async (req, res) => {
                         const json = JSON.parse(body);
                         if (json.verificationProgress || json.rules) {
                             progressData = json;
-                            console.log('找到progress数据');
+                            console.log('Found progress data');
                         }
                     } catch { }
                 }
@@ -330,13 +337,13 @@ app.post('/analyze-and-fetch', async (req, res) => {
     });
 
     try {
-        console.log('访问页面...');
+        console.log('Accessing page...');
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => { });
         await browser.close();
 
         if (!progressData) {
-            return res.status(404).json({ error: '未找到验证数据' });
+            return res.status(404).json({ error: 'Verification data not found' });
         }
 
         const roots = getProgressRoots(progressData);
@@ -346,7 +353,7 @@ app.post('/analyze-and-fetch', async (req, res) => {
             collectFailedRuleOutputs(root, runInfo, failedRules);
         }
 
-        // 去重
+        // Deduplicate
         const uniqueRules = new Map();
         for (const rule of failedRules) {
             if (!uniqueRules.has(rule.outputFile)) {
@@ -360,40 +367,40 @@ app.post('/analyze-and-fetch', async (req, res) => {
             return numA - numB;
         });
 
-        console.log(`找到 ${sortedRules.length} 个需要分析的规则（VIOLATED和SANITY_FAILED），正在获取JSON内容...`);
+        console.log(`Found ${sortedRules.length} rules to analyze (VIOLATED and SANITY_FAILED), fetching JSON content...`);
 
-        // 带重试的获取函数：直至成功
+        // Function with retry: until success
         const fetchJsonWithRetry = async (rule, delayMs = 2000) => {
             let attempt = 0;
-            // 无限重试直到成功
-            // 注意：为防止过快重试，增加固定等待
+            // Infinite retry until success
+            // Note: Add fixed wait to prevent too fast retry
             while (true) {
                 attempt++;
                 try {
-                    console.log(`获取 ${rule.outputFile} (尝试 ${attempt})...`);
+                    console.log(`Fetching ${rule.outputFile} (attempt ${attempt})...`);
                     const response = await fetch(rule.url);
                     if (!response.ok) {
-                        console.warn(`HTTP ${response.status} 获取 ${rule.outputFile} 失败，重试中...`);
+                        console.warn(`HTTP ${response.status} failed to fetch ${rule.outputFile}, retrying...`);
                     } else {
                         const jsonContent = await response.json();
-                        // 简单校验
+                        // Simple validation
                         if (jsonContent && typeof jsonContent === 'object') {
                             return { ...rule, content: jsonContent };
                         }
-                        console.warn(`解析 ${rule.outputFile} JSON 失败，重试中...`);
+                        console.warn(`Failed to parse ${rule.outputFile} JSON, retrying...`);
                     }
                 } catch (e) {
-                    console.warn(`获取 ${rule.outputFile} 出错: ${e.message}，重试中...`);
+                    console.warn(`Failed to fetch ${rule.outputFile}: ${e.message}, retrying...`);
                 }
-                // 等待后重试
+                // Wait then retry
                 await new Promise(r => setTimeout(r, delayMs));
             }
         };
 
-        // 并发获取所有JSON文件的内容（每个都有自身的无限重试）
+        // Concurrently fetch all JSON file contents (each has its own infinite retry)
         const rulesWithContent = await Promise.all(sortedRules.map(rule => fetchJsonWithRetry(rule)));
 
-        // 返回完整结果
+        // Return complete results
         res.json({
             url: url,
             runInfo: runInfo,
@@ -403,24 +410,24 @@ app.post('/analyze-and-fetch', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('分析错误:', error);
+        console.error('Analysis error:', error);
         await browser.close();
         res.status(500).json({ error: error.message });
     }
 });
 
-// 新增 /analyze-rule-stream 端点用于单个规则的流式 Codex 分析
+// New /analyze-rule-stream endpoint for streaming Codex analysis of individual rules
 app.post('/analyze-rule-stream', async (req, res) => {
     const { content, type, projectPath } = req.body;
 
     if (!content || !type) {
         return res.status(400).json({
             success: false,
-            error: '缺少必需参数: content 和 type'
+            error: 'Missing required parameters: content and type'
         });
     }
 
-    // 设置SSE响应头
+    // Set SSE response headers
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -664,23 +671,24 @@ CRITICAL:THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNE
 According to the workflow guide above, analyze the following verification counterexample:
 ${content}`;
         } else if (type === 'SANITY_FAILED') {
-            promptText = `分析以下汇总的CVL sanity failed规则信息，找出失败原因和修复建议：
+            promptText = `Analyze the following aggregated CVL sanity failed rule information, identify failure causes and repair suggestions:
 
 ${content}`;
         }
 
-        // 清理提示文本中的null字节
+        // Clean null bytes from prompt text
         const cleanPromptText = promptText.replace(/\0/g, '');
 
-        sendProgress('开始分析...', 'info');
+        sendProgress('Starting analysis...', 'info');
         if (projectPath && projectPath.trim()) {
-            sendProgress(`设置工作目录: ${projectPath.trim()}`, 'info');
+            sendProgress(`Set working directory: ${projectPath.trim()}`, 'info');
         }
 
-        // 分析阶段使用只读模式 + 高级推理 + 详细推理总结
+        // Analysis phase: read-only sandbox + high reasoning effort + detailed summary
         const codexArgs = [
             'exec',
             '--sandbox', 'read-only',
+            '--ask-for-approval', 'never',
             '-c', 'model_reasoning_effort=high',
             '-c', 'model_reasoning_summary=detailed'
         ];
@@ -695,24 +703,24 @@ ${content}`;
             detached: true
         });
 
-        // 如客户端断开，终止子进程
+        // If client disconnects, terminate the child process
         let analyzeKilled = false;
         const killAnalyzeProc = () => {
             try {
                 if (!analyzeKilled && analyzeCodexProcess && analyzeCodexProcess.pid) {
                     analyzeKilled = true;
-                    try { analyzeCodexProcess.kill('SIGTERM'); } catch {}
-                    try { process.kill(-analyzeCodexProcess.pid, 'SIGTERM'); } catch {}
+                    try { analyzeCodexProcess.kill('SIGTERM'); } catch { }
+                    try { process.kill(-analyzeCodexProcess.pid, 'SIGTERM'); } catch { }
                     setTimeout(() => {
                         try {
                             if (analyzeCodexProcess && analyzeCodexProcess.pid) {
-                                try { analyzeCodexProcess.kill('SIGKILL'); } catch {}
-                                try { process.kill(-analyzeCodexProcess.pid, 'SIGKILL'); } catch {}
+                                try { analyzeCodexProcess.kill('SIGKILL'); } catch { }
+                                try { process.kill(-analyzeCodexProcess.pid, 'SIGKILL'); } catch { }
                             }
-                        } catch {}
+                        } catch { }
                     }, 1200);
                 }
-            } catch {}
+            } catch { }
         };
         req.on('close', killAnalyzeProc);
         req.on('aborted', killAnalyzeProc);
@@ -720,23 +728,23 @@ ${content}`;
 
         let fullOutput = '';
         let hasError = false;
-        // 缓冲并在检测到 "User instructions:" 时一次性输出其之前的系统信息区块
+        // Buffer system header and flush once "User instructions:" is detected
         let preambleBuffer = '';
         let seenUserInstructions = false;
         let emittedSystemHeader = false;
-        // 不再流式输出助理内容：仅输出系统头，其余等待最终结果
+        // Do not stream assistant content: only output the header; rest at final
         let headerEmitted = false;
 
         analyzeCodexProcess.stdout.on('data', (data) => {
             const chunk = data.toString();
             fullOutput += chunk;
 
-            // 1) 系统头：缓冲直到出现 User instructions
+            // 1) System header: buffer until "User instructions" appears
             if (!seenUserInstructions) {
                 preambleBuffer += chunk;
                 const idx = preambleBuffer.indexOf('User instructions:');
                 if (idx !== -1 && !emittedSystemHeader) {
-                    // 截断到包含 "User instructions:" 的整行之前（不包含该行的时间戳等）
+                    // Truncate up to the line containing "User instructions:" (exclude that line/timestamp)
                     const lineStart = preambleBuffer.lastIndexOf('\n', idx);
                     const cutoff = lineStart >= 0 ? lineStart : idx;
                     const before = preambleBuffer.slice(0, cutoff).trimEnd();
@@ -749,7 +757,7 @@ ${content}`;
                 return;
             }
 
-            // 2) 已过 User instructions: 不再发送任何流式输出，等待进程结束后发送 final
+            // 2) After "User instructions": do not stream further; wait for final
             headerEmitted = true;
         });
 
@@ -761,26 +769,26 @@ ${content}`;
         analyzeCodexProcess.on('error', (error) => {
             hasError = true;
             if (error.code === 'ENOENT') {
-                console.error('Codex CLI 未找到，请确保已安装');
-                sendProgress('Codex CLI 未找到，请安装 Codex CLI', 'error');
+                console.error('Codex CLI not found, please ensure it is installed');
+                sendProgress('Codex CLI not found, please install Codex CLI', 'error');
             } else if (error.code === 'EPIPE') {
-                console.log('进程管道关闭 (EPIPE) - 这通常是正常的');
+                console.log('Process pipe closed (EPIPE) - this is usually normal');
             } else {
-                console.error('Codex 进程错误:', error);
-                sendProgress(`进程错误: ${error.message}`, 'error');
+                console.error('Codex process error:', error);
+                sendProgress(`Process error: ${error.message}`, 'error');
             }
         });
 
         analyzeCodexProcess.on('close', (code) => {
-            console.log(`Codex 进程结束，退出码: ${code}`);
+            console.log(`Codex process ended, exit code: ${code}`);
             if (code === 0 && !hasError) {
-                // 提取最终分析结果，仅在结束时输出
+                // Extract final analysis and output only at the end
                 const finalResult = extractCodexAnswer(fullOutput);
                 sendProgress(finalResult, 'final');
-                sendProgress('分析完成', 'success');
+                sendProgress('Analysis complete', 'success');
             } else {
-                const errorMsg = `进程异常退出，码: ${code}`;
-                console.error('Codex 执行错误:', errorMsg);
+                const errorMsg = `Process exited abnormally, code: ${code}`;
+                console.error('Codex execution error:', errorMsg);
                 sendProgress(errorMsg, 'error');
             }
             res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
@@ -788,32 +796,32 @@ ${content}`;
         });
 
     } catch (error) {
-        console.error('分析错误:', error);
-        sendProgress(`分析错误: ${error.message}`, 'error');
+        console.error('Analysis error:', error);
+        sendProgress(`Analysis error: ${error.message}`, 'error');
         res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
         res.end();
     }
 });
 
 
-// 新增 /generate-fix-prompt 端点用于生成修复 prompt
+// New endpoint: /generate-fix-prompt to generate fix prompt
 app.post('/generate-fix-prompt', async (req, res) => {
     const { analyses } = req.body;
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.status(400).json({
             success: false,
-            error: '缺少分析结果'
+            error: 'Missing analysis results'
         });
     }
 
-    console.log(`生成修复 prompt，共 ${analyses.length} 个分析结果`);
+    console.log(`Generating fix prompt, ${analyses.length} analysis results`);
 
     try {
-        // 标准化输入：支持字符串数组或对象数组 { text, ruleName }
+        // Normalize input: support string array or object array { text, ruleName }
         const items = analyses.map((a) => {
             if (a && typeof a === 'object') {
-                // 兼容不同字段名
+                // Support different field names
                 const text = a.text ?? a.analysis ?? '';
                 const ruleName = a.ruleName ?? a.name ?? a.rule ?? '';
                 return { text: String(text || ''), ruleName: String(ruleName || '') };
@@ -821,22 +829,22 @@ app.post('/generate-fix-prompt', async (req, res) => {
             return { text: String(a || ''), ruleName: '' };
         });
 
-        // 分离和格式化分析结果（在结论头部加入规则名）
+        // Format analyses (inject rule name into header)
         const formattedAnalyses = items.map((item, index) => {
             const headerTitle = item.ruleName
-                ? `分析结论 ${index + 1} · 规则：${item.ruleName}`
-                : `分析结论 ${index + 1}`;
+                ? `Analysis Conclusion ${index + 1} · Rule: ${item.ruleName}`
+                : `Analysis Conclusion ${index + 1}`;
             return `╔═══════════════════════════════════════════════════════════════════════════════════╗
 ║ ${headerTitle}
 
 
 ${item.text}
 
-║                                 分析结论 ${index + 1} 结束                                ║
+║                           Analysis Conclusion ${index + 1} End                           ║
 ╚═══════════════════════════════════════════════════════════════════════════════════╝`;
         });
 
-        const promptText = `You will perform sequential fixes. I will provide exactly one analysis finding per run. After you finish fixing that single item, exit. A new Codex session will then start for the next item.
+        const promptText = `
 
 Before you start, carefully read the working guidelines in the YAML file (keep them in mind for every item):
 \`\`\`yaml 
@@ -1105,7 +1113,7 @@ PLEASE BEGIN THE REMEDIATION TASK FOR A SINGLE ITEM WHEN PROVIDED: `;
         });
 
     } catch (error) {
-        console.error('生成 prompt 错误:', error);
+        console.error('Generate prompt error:', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -1113,129 +1121,18 @@ PLEASE BEGIN THE REMEDIATION TASK FOR A SINGLE ITEM WHEN PROVIDED: `;
     }
 });
 
-// 修改后的 /fix-all-stream 端点用于流式批量修复
-app.post('/fix-all-stream', async (req, res) => {
-    const { prompt, projectPath } = req.body;
-
-    if (!prompt || typeof prompt !== 'string') {
-        return res.status(400).json({
-            success: false,
-            error: '缺少修复 prompt'
-        });
-    }
-
-    console.log(`开始流式批量修复，prompt 长度: ${prompt.length} `);
-    if (projectPath) {
-        console.log(`指定项目路径: ${projectPath} `);
-    } else {
-        console.log('使用自动项目搜索');
-    }
-
-    // 设置SSE响应头
-    res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control'
-    });
-
-    const sendProgress = (message, type = 'output') => {
-        res.write(`data: ${JSON.stringify({ type, message })} \n\n`);
-    };
-
-    try {
-        const { spawn } = await import('child_process');
-
-        // 清理提示文本中的null字节
-        const cleanPromptText = prompt.replace(/\0/g, '');
-
-        // 构建 Codex 命令参数 + 高级推理 + 详细推理总结
-        const codexArgs = [
-            'exec',
-            '--dangerously-bypass-approvals-and-sandbox',
-            '-c', 'model_reasoning_effort=high',
-            '-c', 'model_reasoning_summary=detailed'
-        ];
-
-        // 如果用户指定了项目路径，添加 -C 参数
-        if (projectPath && projectPath.trim()) {
-            codexArgs.push('-C', projectPath.trim());
-            sendProgress(`设置工作目录: ${projectPath.trim()} `, 'info');
-        } else {
-            sendProgress('开始执行修复（使用自动项目搜索）...', 'info');
-        }
-
-        codexArgs.push(cleanPromptText);
-
-        console.log('Codex 命令参数:', codexArgs.slice(0, -1)); // 不打印完整 prompt
-
-        // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
-        const fixCodexProcess = spawn('codex', codexArgs, {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env },
-            detached: true
-        });
-
-        let hasError = false;
-
-        fixCodexProcess.stdout.on('data', (data) => {
-            const output = data.toString();
-            sendProgress(output, 'output');
-
-            // 检查是否包含验证URL
-            const urlMatch = output.match(/https:\/\/prover\.certora\.com\/output\/[^\s]+/);
-            if (urlMatch) {
-                sendProgress(urlMatch[0], 'url');
-            }
-        });
-
-        fixCodexProcess.stderr.on('data', (data) => {
-            const errorOutput = data.toString();
-            sendProgress(errorOutput, 'error');
-        });
-
-        fixCodexProcess.on('error', (error) => {
-            hasError = true;
-            if (error.code === 'EPIPE') {
-                console.log('修复进程管道关闭 (EPIPE) - 这通常是正常的');
-            } else {
-                console.error('修复进程错误:', error);
-                sendProgress(`进程错误: ${error.message} `, 'error');
-            }
-        });
-
-        fixCodexProcess.on('close', (code) => {
-            console.log(`修复进程结束，退出码: ${code} `);
-            if (code === 0 && !hasError) {
-                sendProgress('修复任务完成', 'success');
-            } else {
-                sendProgress(`修复进程异常退出，退出码: ${code} `, 'error');
-            }
-            res.write(`data: ${JSON.stringify({ type: 'complete' })} \n\n`);
-            res.end();
-        });
-
-    } catch (error) {
-        console.error('修复错误:', error);
-        sendProgress(`修复错误: ${error.message} `, 'error');
-        res.write(`data: ${JSON.stringify({ type: 'complete' })} \n\n`);
-        res.end();
-    }
-});
-
-// 新增：顺序修复 + certoraRun 循环
+// New: sequential fix + certoraRun loop
 app.post('/fix-sequential-stream', async (req, res) => {
     const { basePrompt, analyses, projectPath, confPath } = req.body || {};
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
             success: false,
-            error: '缺少分析结果（analyses）'
+            error: 'Missing analysis results (analyses)'
         }));
     }
 
-    // SSE 头
+    // SSE headers
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -1247,61 +1144,68 @@ app.post('/fix-sequential-stream', async (req, res) => {
     const send = (message, type = 'output') => {
         try {
             res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
-        } catch {}
+        } catch { }
     };
 
-    let aborted = false; // 仅用于显式停止（不再由连接关闭自动赋值）
-    let clientDisconnected = false; // 记录客户端是否断开，但不中断修复流程
-    let currentChild = null;
+    // reset abort flag and mark the flow active
+    globalFixAbort = false;
+    let clientDisconnected = false; // client disconnects but do not abort fix flow
+    currentChild = null;
+    activeFixRunning = true;
     const killCurrent = () => {
         try {
             if (currentChild && currentChild.pid) {
-                try { currentChild.kill('SIGTERM'); } catch {}
-                try { process.kill(-currentChild.pid, 'SIGTERM'); } catch {}
+                try { currentChild.kill('SIGTERM'); } catch { }
+                try { process.kill(-currentChild.pid, 'SIGTERM'); } catch { }
                 setTimeout(() => {
                     try {
                         if (currentChild && currentChild.pid) {
-                            try { currentChild.kill('SIGKILL'); } catch {}
-                            try { process.kill(-currentChild.pid, 'SIGKILL'); } catch {}
+                            try { currentChild.kill('SIGKILL'); } catch { }
+                            try { process.kill(-currentChild.pid, 'SIGKILL'); } catch { }
                         }
-                    } catch {}
+                    } catch { }
                 }, 1500);
             }
-        } catch {}
+        } catch { }
     };
     req.on('close', () => { clientDisconnected = true; killCurrent(); });
 
-    const spawnCodexOnce = async (promptText, ruleName = '修复任务') => {
+    const spawnCodexOnce = async (promptText, ruleName = 'Fix Task') => {
         const { spawn } = await import('child_process');
 
         return new Promise((resolve) => {
+            if (globalFixAbort) {
+                send('Abort requested before spawning Codex', 'info');
+                return resolve(false);
+            }
             const args = [
                 'exec',
-                '--dangerously-bypass-approvals-and-sandbox',
+                '--sandbox', 'workspace-write',
+                '--ask-for-approval', 'never',
                 '-c', 'model_reasoning_effort=high',
                 '-c', 'model_reasoning_summary=detailed'
             ];
             if (projectPath && String(projectPath).trim()) {
                 args.push('-C', String(projectPath).trim());
-                send(`设置工作目录: ${String(projectPath).trim()}`, 'info');
+                send(`Set working directory: ${String(projectPath).trim()}`, 'info');
             }
             args.push(String(promptText || '').replace(/\0/g, ''));
 
-            send(`启动 Codex 进行修复：${ruleName}`, 'info');
-            // 取消 detached，避免子进程与请求生命周期脱离导致SSE提前结束
+            send(`Starting Codex fix: ${ruleName}`, 'info');
+            // Avoid detached to keep process tied to request lifecycle (prevents early SSE end)
             currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
 
             currentChild.stdout.on('data', (d) => send(d.toString(), 'output'));
             currentChild.stderr.on('data', (d) => send(d.toString(), 'error'));
             currentChild.on('error', (e) => {
-                send(`进程错误: ${e.message}`, 'error');
-                try { currentChild && currentChild.kill('SIGTERM'); } catch {}
+                send(`Process error: ${e.message}`, 'error');
+                try { currentChild && currentChild.kill('SIGTERM'); } catch { }
                 currentChild = null;
                 return resolve(false);
             });
             currentChild.on('close', (code) => {
                 currentChild = null;
-                send(`Codex 退出: ${code}`, code === 0 ? 'success' : 'error');
+                send(`Codex exited: ${code}`, code === 0 ? 'success' : 'error');
                 resolve(code === 0);
             });
         });
@@ -1309,7 +1213,7 @@ app.post('/fix-sequential-stream', async (req, res) => {
 
     const runCertora = async () => {
         if (!confPath || !String(confPath).trim()) {
-            send('未提供 conf 路径，跳过 certoraRun', 'info');
+            send('No conf path provided, skipping certoraRun', 'info');
             return { success: false, url: '', output: '' };
         }
 
@@ -1320,15 +1224,15 @@ app.post('/fix-sequential-stream', async (req, res) => {
             const spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env } };
             if (projectPath && String(projectPath).trim()) spawnOpts.cwd = String(projectPath).trim();
 
-            send(`运行: certoraRun ${args.join(' ')}`, 'info');
-            // 不使用 detached，保持与请求同生命周期
+            send(`Running: certoraRun ${args.join(' ')}`, 'info');
+            // Do not use detached, keep same lifecycle as request
             currentChild = spawn(cmd, args, spawnOpts);
             let out = '';
             let err = '';
             currentChild.stdout.on('data', (d) => { const s = d.toString(); out += s; send(s, 'output'); });
             currentChild.stderr.on('data', (d) => { const s = d.toString(); err += s; send(s, 'output'); });
             currentChild.on('error', (e) => {
-                send(`certoraRun 进程错误: ${e.message}`, 'error');
+                send(`certoraRun process error: ${e.message}`, 'error');
             });
             currentChild.on('close', () => {
                 currentChild = null;
@@ -1337,10 +1241,10 @@ app.post('/fix-sequential-stream', async (req, res) => {
                 const url = urlMatches && urlMatches.length ? urlMatches[urlMatches.length - 1] : '';
                 if (url) {
                     send(url, 'url');
-                    send('certoraRun 成功，已获得验证URL', 'success');
+                    send('certoraRun successful, verification URL obtained', 'success');
                     resolve({ success: true, url, output: combined });
                 } else {
-                    send('certoraRun 未返回验证URL，视为失败', 'error');
+                    send('certoraRun did not return verification URL, considered as failure', 'error');
                     resolve({ success: false, url: '', output: combined });
                 }
             });
@@ -1348,9 +1252,9 @@ app.post('/fix-sequential-stream', async (req, res) => {
     };
 
     try {
-        send(`开始顺序修复，共 ${analyses.length} 项`, 'info');
+        send(`Starting sequential fix, ${analyses.length} items total`, 'info');
 
-        // 标准化输入
+        // Normalize input
         const items = analyses.map((a, i) => {
             if (a && typeof a === 'object') {
                 const text = a.text ?? a.analysis ?? '';
@@ -1360,181 +1264,186 @@ app.post('/fix-sequential-stream', async (req, res) => {
             return { text: String(a || ''), ruleName: `Item ${i + 1}` };
         });
 
-        // 调试信息：显示每个项目的规则名
-        send(`📋 待修复项目列表：`, 'info');
+        // Debug: log each item's rule name
+        send(`📋 List of items to fix:`, 'info');
         items.forEach((item, index) => {
             send(`  ${index + 1}. ${item.ruleName}`, 'info');
         });
 
-        // 逐项修复
+        // Fix items sequentially
         for (let i = 0; i < items.length; i++) {
-            if (aborted) {
-                send(`⚠️ 检测到中止信号，停止修复`, 'info');
+            if (globalFixAbort) {
+                send(`⚠️ Abort signal detected, stopping fix`, 'info');
                 break;
             }
             const item = items[i];
-            send(`➡️ 开始修复第 ${i + 1}/${items.length} 项：${item.ruleName}`, 'info');
-            send(`===== 开始修复第 ${i + 1}/${items.length} 项：${item.ruleName} =====\n`, 'output');
+            // Cleaner section headers
+            send(`➡️ Start ${i + 1}/${items.length}: ${item.ruleName}`, 'info');
+            send(`
+===== [Start ${i + 1}/${items.length}] ${item.ruleName} =====\n`, 'output');
 
             const perPrompt = `${String(basePrompt || '')}
 
-请仅修复下面这一个分析结论描述的问题，然后退出：
+Please fix only the single issue described below:
 ╔══════════════════════════════════════════════════════════════╗
-规则：${item.ruleName}
+Rule: ${item.ruleName}
 
 ${item.text}
 ╚══════════════════════════════════════════════════════════════╝
 
-要求：
-- 优先修改与该项相关的 CVL 规范（.cvl）与 Certora 配置（.conf）
-- ⚠️ 严禁修改以下目录中的 Solidity 文件（.sol）：src/, contract/, contracts/
-- 如果你认为必须修改 Solidity 文件，请停止并解释原因，而不要进行修改
-- 如需执行命令，请直接执行并确保无语法错误。
-- 不要运行 certoraRun 命令 - 程序会在所有修复完成后自动运行
-- 不要处理未提及的其它问题；完成本项后立即退出 Codex。
-现在开始。`;
+Constraints:
+- Prefer modifying CVL specs (.cvl) and Certora config (.conf) related to this item only
+- ⚠️ DO NOT modify Solidity files (.sol) in: src/, contract/, contracts/
+- If Solidity changes seem absolutely necessary, STOP and explain why instead of changing them
+- If you need to run commands, run them directly and ensure no syntax errors
+- Do NOT run certoraRun yourself — the orchestrator will run it after all fixes
+- Do not address unrelated issues; exit Codex immediately after this item
+Begin now.`;
 
-            send(`🔧 调用 Codex 修复第 ${i + 1} 项...`, 'info');
+            send(`🔧 Invoking Codex to fix item ${i + 1}...`, 'info');
             const ok = await spawnCodexOnce(perPrompt, item.ruleName);
-            send(`📋 第 ${i + 1} 项修复结果: ${ok ? '成功' : '失败'}`, 'info');
-            send(`===== 完成第 ${i + 1}/${items.length} 项：${ok ? '成功' : '失败'} =====\n`, 'output');
-            
+            send(`📋 Result ${i + 1}: ${ok ? 'Success' : 'Failure'}`, 'info');
+            send(`===== [Done  ${i + 1}/${items.length}] ${ok ? 'Success' : 'Failure'} =====\n`, 'output');
+
             if (!ok) {
-                if (aborted) {
-                    send(`⚠️ 修复过程中检测到中止信号`, 'info');
+                if (globalFixAbort) {
+                    send(`⚠️ Abort signal detected during fix`, 'info');
                     break;
                 }
-                send(`❌ 第 ${i + 1} 项修复失败，继续下一项`, 'error');
-                // 不要 break，继续执行下一项修复
+                send(`❌ Fix ${i + 1} failed, continue to next`, 'error');
+                // continue to next item
             } else {
-                send(`✅ 第 ${i + 1} 项修复完成`, 'success');
+                send(`✅ Fix ${i + 1} completed`, 'success');
             }
             if (i + 1 < items.length) {
-                send(`⏭️ 准备进入下一项：第 ${i + 2}/${items.length}`, 'info');
-                send(`⏭️ 下一项：第 ${i + 2}/${items.length}\n`, 'output');
+                send(`⏭️ Next ${i + 2}/${items.length}`, 'info');
+                send(`⏭️ Next ${i + 2}/${items.length}\n`, 'output');
             }
-            send(`🔄 循环状态: i=${i}, items.length=${items.length}, aborted=${aborted}`, 'info');
-            send(`🔄 循环状态: i=${i}, items.length=${items.length}, aborted=${aborted}\n`, 'output');
+            // Reduced noisy loop-state logs to keep UI clean
         }
-        
-        send(`🏁 修复循环结束，共处理 ${items.length} 项`, 'info');
-        send(`🏁 修复循环结束，共处理 ${items.length} 项\n`, 'output');
 
-        if (aborted) {
-            send('顺序修复被中止', 'info');
+        send(`🏁 Fix loop finished, processed ${items.length} items`, 'info');
+        send(`🏁 Fix loop finished, processed ${items.length} items\n`, 'output');
+
+        if (globalFixAbort) {
+            send('Sequential fix aborted by user', 'status');
             res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            activeFixRunning = false;
             return res.end();
         }
 
-        // 修复完成后执行 certoraRun（如提供 confPath）
+        // After fixes, run certoraRun (if confPath provided)
         if (confPath && String(confPath).trim()) {
-            send('✅ 全部修复完成，开始运行 certoraRun 检查语法 ...', 'info');
-            send('✅ 开始运行 certoraRun 检查语法 ...\n', 'output');
+            send('✅ All fixes completed, running certoraRun for syntax check...', 'info');
+            send('✅ Running certoraRun for syntax check...\n', 'output');
 
             let attempt = 0;
-            // 无限重试直至成功或被用户中止；仅对“语法类错误”自动进入修复-重试循环
-            while (!aborted) {
+            // Retry until success or aborted; only auto-fix syntax-class errors
+            while (!globalFixAbort) {
                 attempt++;
-                send(`🔄 certoraRun 第 ${attempt} 次尝试`, 'info');
-                send(`🔄 certoraRun 第 ${attempt} 次尝试\n`, 'output');
+                send(`🔄 certoraRun attempt ${attempt}`, 'info');
+                send(`🔄 certoraRun attempt ${attempt}\n`, 'output');
 
                 const result = await runCertora();
 
                 if (result.success) {
-                    send('✅ certoraRun 成功！已获得验证 URL', 'success');
+                    send('✅ certoraRun succeeded! Verification URL obtained', 'success');
                     break;
                 }
 
-                // 分析错误类型
+                // Analyze error type
                 const lower = result.output.toLowerCase();
                 const hasSyntaxError = lower.includes('syntax error') || lower.includes('parse error') || lower.includes('compilation error');
 
                 if (hasSyntaxError) {
-                    send('❌ certoraRun 检测到语法错误，发送给 Codex 修复...', 'error');
-                    send('❌ certoraRun 语法错误，交由 Codex 修复\n', 'output');
+                    send('❌ certoraRun detected syntax errors; sending to Codex to fix...', 'error');
+                    send('❌ certoraRun syntax errors; delegating to Codex\n', 'output');
 
-                    const failurePrompt = `语法错误修复任务：
+                    const failurePrompt = `Syntax error remediation task:
 
-certoraRun 检测到语法错误，以下为完整日志：
+certoraRun detected syntax errors. Here is the tail of the full log:
 
-⚠️ 重要限制：
-- 请仅在 CVL 规范（.cvl）与 Certora 配置（.conf）中进行修复
-- 严禁修改以下目录中的 Solidity 文件（.sol）：src/, contract/, contracts/
-- 如你认为必须改动 Solidity 源码，请停止并返回理由
-- 目标是修复语法错误，让 certoraRun 成功
-- 不要自己运行 certoraRun 命令
-- 修复完成后立即退出
+⚠️ Constraints:
+- Modify only CVL (.cvl) and Certora config (.conf)
+- Do NOT change Solidity files (.sol) in src/, contract/, contracts/
+- If Solidity edits seem necessary, STOP and explain why
+- The goal is to fix syntax issues so certoraRun succeeds
+- Do not run certoraRun yourself
+- Exit immediately after the fix attempt
 
-错误日志：
-${result.output.slice(-8000)}
+Error log tail:
+${result.output.slice(-9000)}
 `;
 
-                    const fixOk = await spawnCodexOnce(failurePrompt, '语法错误修复');
+                    const fixOk = await spawnCodexOnce(failurePrompt, 'Syntax Error Fix');
                     if (!fixOk) {
-                        if (aborted) break;
-                        // 修复失败不终止全局流程，但会进入下一次 certoraRun 重试（仍无限次，直到手动中止或成功）
-                        send('❌ Codex 修复语法错误失败，将继续重试 certoraRun', 'error');
-                        send('❌ Codex 修复语法错误失败，将继续重试 certoraRun\n', 'output');
+                        if (globalFixAbort) break;
+                        // Continue loop: try certoraRun again (until abort or success)
+                        send('❌ Codex failed to fix syntax errors; will retry certoraRun', 'error');
+                        send('❌ Codex failed to fix syntax errors; will retry certoraRun\n', 'output');
                     } else {
-                        send('✅ Codex 已尝试修复语法错误', 'success');
-                        send('✅ Codex 已尝试修复语法错误\n', 'output');
+                        send('✅ Codex attempted to fix syntax errors', 'success');
+                        send('✅ Codex attempted to fix syntax errors\n', 'output');
                     }
-                    // 循环继续，进入下一次 certoraRun 以验证修复
+                    // Continue loop, run next certoraRun to verify fix
                     continue;
                 }
 
-                // 非语法错误：通常为逻辑失败、约束不一致、超时等，避免无意义的无限重试
-                send('⚠️ certoraRun 失败（非语法错误），详情见日志', 'error');
+                // Non-syntax errors: logic, constraints, timeouts; avoid infinite loop
+                send('⚠️ certoraRun failed (non-syntax). See logs for details', 'error');
                 send(result.output.slice(-2000), 'output');
                 break;
             }
         } else {
-            send('⚠️ 未提供 conf 路径，跳过 certoraRun', 'info');
-            send('⚠️ 未提供 conf 路径，跳过 certoraRun\n', 'output');
+            send('⚠️ No conf path provided; skipping certoraRun', 'info');
+            send('⚠️ No conf path provided; skipping certoraRun\n', 'output');
         }
 
-        send('顺序修复流程完成', 'success');
+        send('Sequential fix flow completed', 'success');
         res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+        activeFixRunning = false;
         res.end();
 
     } catch (e) {
-        send(`顺序修复出错: ${e.message}`, 'error');
+        send(`Sequential fix error: ${e.message}`, 'error');
         if (e && e.stack) send(e.stack, 'output');
         res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+        activeFixRunning = false;
         res.end();
     }
 });
 
-// 保留原有的 /fix-all 端点以保持兼容性
+// Keep original /fix-all endpoint for compatibility
 app.post('/fix-all', async (req, res) => {
     const { analyses } = req.body;
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.status(400).json({
             success: false,
-            error: '缺少分析结果'
+            error: 'Missing analysis results'
         });
     }
 
-    console.log(`开始批量修复，共 ${analyses.length} 个任务`);
+    console.log(`Starting batch fix, ${analyses.length} tasks total`);
 
     try {
         const { spawn } = await import('child_process');
         const combinedAnalysis = analyses.join('\n\n---\n\n');
 
-        const promptText = `基于以下CVL分析结果，生成修复建议和代码改进：
+        const promptText = `Based on the following CVL analysis results, generate fix suggestions and code improvements:
 
 ${combinedAnalysis}
 
-        请提供具体的修复步骤和代码建议。`;
+Please provide concrete steps and code suggestions.`;
 
-        // 清理提示文本中的null字节
+        // Clean null bytes from prompt text
         const cleanPromptText = promptText.replace(/\0/g, '');
 
-        // 修复阶段使用危险模式（允许完全访问和执行命令）+ 高级推理
+        // Fix phase: danger mode (full access + command execution) + high reasoning effort
         codexProcess = spawn('codex', [
             'exec',
-            '--dangerously-bypass-approvals-and-sandbox',
+            '--sandbox', 'workspace-write',
+            '--ask-for-approval', 'never',
             '-c', 'model_reasoning_effort=high',
             '-c', 'model_reasoning_summary=detailed',
             cleanPromptText
@@ -1543,6 +1452,9 @@ ${combinedAnalysis}
             env: { ...process.env },
             detached: true
         });
+
+        // Track as current child so targeted stop can terminate it
+        currentChild = codexProcess;
 
         let output = '';
         let errorOutput = '';
@@ -1557,45 +1469,46 @@ ${combinedAnalysis}
 
         codexProcess.on('error', (error) => {
             if (error.code === 'EPIPE') {
-                console.log('修复进程管道关闭 (EPIPE) - 这通常是正常的');
+                console.log('Fix process pipe closed (EPIPE) - this is usually normal');
             } else {
-                console.error('修复进程错误:', error);
+                console.error('Fix process error:', error);
                 res.json({
                     success: false,
-                    error: `进程错误: ${error.message} `
+                    error: `Process error: ${error.message} `
                 });
             }
         });
 
-        // 如客户端断开，终止子进程（静默，无日志）
+        // If client disconnects, terminate child process (silent)
         req.on('close', () => {
             try {
                 if (codexProcess && codexProcess.pid) {
-                    try { codexProcess.kill('SIGTERM'); } catch {}
-                    try { process.kill(-codexProcess.pid, 'SIGTERM'); } catch {}
+                    try { codexProcess.kill('SIGTERM'); } catch { }
+                    try { process.kill(-codexProcess.pid, 'SIGTERM'); } catch { }
                     setTimeout(() => {
                         try {
                             if (codexProcess && codexProcess.pid) {
-                                try { codexProcess.kill('SIGKILL'); } catch {}
-                                try { process.kill(-codexProcess.pid, 'SIGKILL'); } catch {}
+                                try { codexProcess.kill('SIGKILL'); } catch { }
+                                try { process.kill(-codexProcess.pid, 'SIGKILL'); } catch { }
                             }
-                        } catch {}
+                        } catch { }
                     }, 1200);
                 }
-            } catch {}
+            } catch { }
         });
 
         codexProcess.on('close', (code) => {
-            console.log(`修复进程结束，退出码: ${code} `);
+            console.log(`Fix process ended, exit code: ${code} `);
+            currentChild = null;
             if (code === 0) {
                 res.json({
                     success: true,
-                    message: '修复建议已生成',
+                    message: 'Fix suggestions generated',
                     analysis: output
                 });
             } else {
-                const errorMsg = errorOutput || `修复进程异常退出，码: ${code} `;
-                console.error('修复执行错误:', errorMsg);
+                const errorMsg = errorOutput || `Fix process exited abnormally, code: ${code} `;
+                console.error('Fix execution error:', errorMsg);
                 res.json({
                     success: false,
                     error: errorMsg
@@ -1604,7 +1517,7 @@ ${combinedAnalysis}
         });
 
     } catch (error) {
-        console.error('修复错误:', error);
+        console.error('Fix error:', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -1612,81 +1525,42 @@ ${combinedAnalysis}
     }
 });
 
-// 新增：手动终止所有 codex 进程的端点
+// New: endpoint to terminate all Codex processes
 app.post('/kill-processes', async (req, res) => {
     try {
-        console.log('收到手动终止进程请求');
-        
-        const { spawn } = await import('child_process');
-        
-        // 使用 pkill 命令终止所有 codex 进程
-        const killProcess = spawn('pkill', ['-f', 'codex'], {
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-        
-        let output = '';
-        let errorOutput = '';
-        
-        killProcess.stdout.on('data', (data) => {
-            output += data.toString();
-        });
-        
-        killProcess.stderr.on('data', (data) => {
-            errorOutput += data.toString();
-        });
-        
-        killProcess.on('close', (code) => {
-            console.log(`pkill 命令结束，退出码: ${code}`);
-            
-            // 检查是否还有残留进程
-            const checkProcess = spawn('pgrep', ['-f', 'codex'], {
-                stdio: ['ignore', 'pipe', 'pipe']
-            });
-            
-            let remaining = '';
-            checkProcess.stdout.on('data', (data) => {
-                remaining += data.toString();
-            });
-            
-            checkProcess.on('close', (checkCode) => {
-                const remainingPids = remaining.trim().split('\n').filter(pid => pid);
-                
-                if (remainingPids.length > 0 && remainingPids[0] !== '') {
-                    console.log(`发现残留进程: ${remainingPids.join(', ')}`);
-                    res.json({
-                        success: true,
-                        message: `已尝试终止进程，发现 ${remainingPids.length} 个残留进程`,
-                        remainingPids: remainingPids,
-                        killOutput: output,
-                        killError: errorOutput
-                    });
-                } else {
-                    console.log('所有 codex 进程已终止');
-                    res.json({
-                        success: true,
-                        message: '所有 codex 进程已成功终止',
-                        remainingPids: [],
-                        killOutput: output,
-                        killError: errorOutput
-                    });
-                }
-            });
-        });
-        
-        killProcess.on('error', (error) => {
-            console.error('终止进程时出错:', error);
-            res.json({
-                success: false,
-                error: `终止进程失败: ${error.message}`
-            });
-        });
-        
+        console.log('Received manual process termination request');
+
+        // Set global abort flag for sequential fix to observe and exit soon
+        globalFixAbort = true;
+
+        // Only terminate currently running (tracked) child process/group
+        if (currentChild && currentChild.pid) {
+            try {
+                try { currentChild.kill('SIGTERM'); } catch { }
+                try { process.kill(-currentChild.pid, 'SIGTERM'); } catch { }
+                console.log(`Sent SIGTERM to current child process group: ${currentChild.pid}`);
+            } catch (e) {
+                console.log(`Failed to terminate current child process: ${e.message}`);
+            }
+            // After short wait, send SIGKILL if still alive
+            setTimeout(() => {
+                try {
+                    if (currentChild && currentChild.pid) {
+                        try { currentChild.kill('SIGKILL'); } catch { }
+                        try { process.kill(-currentChild.pid, 'SIGKILL'); } catch { }
+                        console.log(`Sent SIGKILL to current child process group: ${currentChild.pid}`);
+                    }
+                } catch { }
+            }, 800);
+        } else {
+            console.log('No current child process to terminate');
+        }
+
+        // Return confirmation; frontend can mark as stopped immediately
+        res.json({ success: true, message: 'Requested stop of current fix process', activeFixRunning });
     } catch (error) {
-        console.error('手动终止进程错误:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        console.error('Manual process termination error:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
@@ -1695,16 +1569,16 @@ app.listen(PORT, () => {
     console.log(`
 ╔════════════════════════════════════════════╗
 ║     Certora Auto Analyzer                 ║
-║     服务运行在: http://localhost:${PORT}    ║
+║     Server running: http://localhost:${PORT}  ║
 ╚════════════════════════════════════════════╝
         `);
 });
-// 新增：列出 <projectPath>/certora/conf 下的 .conf 文件
+// New: list .conf files under <projectPath>/certora/conf
 app.get('/list-conf', async (req, res) => {
     try {
         const projectPath = String(req.query.projectPath || '').trim();
         if (!projectPath) {
-            return res.status(400).json({ success: false, error: '缺少 projectPath' });
+            return res.status(400).json({ success: false, error: 'Missing projectPath' });
         }
 
         const baseDir = path.resolve(projectPath, 'certora', 'conf');

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 
 <head>
     <meta charset="UTF-8">
@@ -436,7 +436,7 @@
             background: rgba(90, 110, 210, 0.95);
         }
 
-        /* 新增样式：修复 prompt 预览界面 */
+        /* New styles: fix prompt preview interface */
         .fix-prompt-modal {
             display: none;
             position: fixed;
@@ -557,51 +557,54 @@
     <div class="container">
         <div class="header">
             <h1>🚀 Certora Analyzer with Codex Integration</h1>
-            <p>自动分析 CVL 验证失败案例并提供修复建议</p>
+            <p>Automatically analyze & fix CVL verification failure cases</p>
         </div>
 
         <div class="content">
             <div class="input-section">
-                <h3 style="margin-bottom: 20px; color: #212529;">输入 Certora URL</h3>
+                <h3 style="margin-bottom: 20px; color: #212529;">Enter Certora URL</h3>
                 <input type="text" class="url-input" id="certora-url"
                     placeholder="https://prover.certora.com/output/..." value="">
 
                 <div style="margin: 10px 0 20px 0;">
-                    <label for="project-path-main" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
-                        🗂️ Solidity 项目路径（workdir，可选，分析与修复共用）：
+                    <label for="project-path-main"
+                        style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
+                        🗂️ Solidity project path (workdir, optional, shared for analysis and fix):
                     </label>
-                    <input type="text" id="project-path-main"
-                           placeholder="/Users/pixelpanda/Pinto/protocol/"
-                           value="/Users/pixelpanda/Pinto/protocol/"
-                           style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
+                    <input type="text" id="project-path-main" placeholder="/Users/pixelpanda/Pinto/protocol/"
+                        value="/Users/pixelpanda/Pinto/protocol/" style="width: 100%; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; 
                                   font-family: 'Courier New', monospace; font-size: 14px;">
                     <small style="color: #6c757d; display: block; margin-top: 5px;">
-                        💡 将用于 Codex 在正确目录下执行（与修复阶段共用）。
+                        💡 Will be used for Codex to execute in the correct directory (shared with fix phase).
                     </small>
                 </div>
 
                 <div style="margin: 0 0 20px 0;">
-                    <label for="certora-conf-select" style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
-                        ⚙️ certoraRun 配置文件（从 <workdir>/certora/conf 自动发现 .conf）：
+                    <label for="certora-conf-select"
+                        style="font-weight: 600; color: #495057; display: block; margin-bottom: 8px;">
+                        ⚙️ certoraRun configuration file (auto-discover .conf from <workdir>/certora/conf):
                     </label>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <select id="certora-conf-select" style="flex: 1; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 14px;">
-                            <option value="">（未加载，输入或更改上方项目路径以自动加载）</option>
+                        <select id="certora-conf-select"
+                            style="flex: 1; padding: 12px; border: 2px solid #dee2e6; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 14px;">
+                            <option value="">(Not loaded, enter or change project path above to auto-load)</option>
                         </select>
-                        <button class="btn btn-primary" id="reload-conf-btn" type="button" style="padding: 10px 16px;">🔄 刷新</button>
+                        <button class="btn btn-primary" id="reload-conf-btn" type="button"
+                            style="padding: 10px 16px;">🔄 Refresh</button>
                     </div>
                     <small id="conf-help" style="color: #6c757d; display: block; margin-top: 5px;">
-                        💡 会列出 <workdir>/certora/conf 目录下的 .conf 文件；若找不到，可手动在该目录放置 .conf 并点击刷新。
+                        💡 Lists .conf files in <workdir>/certora/conf directory; if not found, manually place .conf in
+                            that directory and click refresh.
                     </small>
-                    <!-- 兼容旧逻辑：隐藏的文本输入，仅当无选择时作为回退 -->
+                    <!-- Compatible with old logic: hidden text input, used as fallback only when no selection -->
                     <input type="text" id="certora-conf-path" style="display:none;">
                 </div>
 
                 <button class="btn btn-primary" id="analyzeBtn" onclick="analyzeUrl()">
-                    🔍 获取验证数据
+                    🔍 Get verification data
                 </button>
                 <script>
-                    // 页面加载后尝试根据默认的项目路径初始化 conf 下拉
+                    // Try to initialize conf dropdown based on default project path after page load
                     window.addEventListener('DOMContentLoaded', () => {
                         const projectInput = document.getElementById('project-path-main');
                         if (projectInput && projectInput.value.trim()) {
@@ -612,7 +615,7 @@
                             reloadBtn.addEventListener('click', loadConfOptions);
                         }
                         if (projectInput) {
-                            // 当用户修改项目路径时，自动刷新 conf 列表（防抖）
+                            // When user changes project path, automatically refresh conf list (with debounce)
                             let t = null;
                             projectInput.addEventListener('input', () => {
                                 if (t) clearTimeout(t);
@@ -631,27 +634,30 @@
 
             <div id="action-buttons" class="action-buttons" style="display: none;">
                 <button class="btn btn-success" id="batchAnalyzeBtn" onclick="toggleBatchAnalysis()">
-                    🤖 Codex 分析所有规则
+                    🤖 Codex analyze all rules
                 </button>
                 <button class="btn btn-warning" onclick="fixAll()">
-                    🔧 执行顺序修复
+                    🔧 Execute sequential fix
                 </button>
             </div>
 
-            <!-- 修复执行输出区域 - 移到主界面 -->
+            <!-- Fix execution output area - moved to main interface -->
             <div id="main-fix-output" style="display: none; margin-top: 20px;">
-                <h3 style="margin-bottom: 20px; color: #212529;">🔧 修复执行过程</h3>
+                <h3 style="margin-bottom: 20px; color: #212529;">🔧 Fix execution process</h3>
                 <div id="main-fix-controls" style="margin-bottom: 12px; display: none;">
-                    <button class="btn btn-danger" id="stop-fix-btn" onclick="stopFix()">⏸ 暂停并终止 Codex</button>
+                    <button class="btn btn-danger" id="stop-fix-btn" onclick="stopFix()">⏸ Pause and terminate
+                        Codex</button>
                 </div>
                 <div id="main-fix-status" class="status-message" style="margin-bottom: 15px;"></div>
-                <div id="main-fix-content" style="background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; 
+                <div id="main-fix-content"
+                    style="background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; 
                      font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; 
                      word-break: break-word; max-height: 500px; overflow-y: auto; min-height: 200px; margin-bottom: 15px;"></div>
                 <div id="main-verification-url" style="margin-top: 15px; padding: 15px; background: #d4edda; 
                      border-radius: 8px; display: none;">
-                    <strong>🎉 验证完成！</strong><br>
-                    查看验证结果：<a id="main-verification-link" href="#" target="_blank" style="color: #155724; font-weight: 600;"></a>
+                    <strong>🎉 Verification complete!</strong><br>
+                    View verification results: <a id="main-verification-link" href="#" target="_blank"
+                        style="color: #155724; font-weight: 600;"></a>
                 </div>
             </div>
 
@@ -659,11 +665,11 @@
                 <table class="result-table" id="result-table">
                     <thead>
                         <tr>
-                            <th style="width: 25%;">规则名</th>
-                            <th style="width: 10%;">状态</th>
+                            <th style="width: 25%;">Rule Name</th>
+                            <th style="width: 10%;">Status</th>
                             <th style="width: 10%;">Markdown</th>
-                            <th style="width: 40%;">Codex分析结果</th>
-                            <th style="width: 15%;">操作</th>
+                            <th style="width: 40%;">Codex Analysis Result</th>
+                            <th style="width: 15%;">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="result-tbody">
@@ -672,7 +678,7 @@
             </div>
 
             <div id="prover-url" class="prover-url">
-                验证完成！查看结果：<a href="#" target="_blank" id="prover-link"></a>
+                Verification complete! View results: <a href="#" target="_blank" id="prover-link"></a>
             </div>
         </div>
     </div>
@@ -681,7 +687,7 @@
     <div id="markdown-modal" class="markdown-modal">
         <div class="markdown-modal-content">
             <span class="close-modal" onclick="closeMarkdownModal()">&times;</span>
-            <h3 id="modal-title" style="margin-bottom: 20px;">Markdown 内容</h3>
+            <h3 id="modal-title" style="margin-bottom: 20px;">Markdown Content</h3>
             <div id="modal-content" class="markdown-content"></div>
         </div>
     </div>
@@ -690,7 +696,7 @@
     <div id="codex-modal" class="codex-modal">
         <div class="codex-modal-content">
             <span class="close-modal" onclick="closeCodexModal()">&times;</span>
-            <h3 id="codex-modal-title" style="margin-bottom: 20px;">Codex 分析详情</h3>
+            <h3 id="codex-modal-title" style="margin-bottom: 20px;">Codex Analysis Details</h3>
             <div id="codex-modal-content" class="codex-content"></div>
         </div>
     </div>
@@ -699,32 +705,32 @@
     <div id="fix-prompt-modal" class="fix-prompt-modal">
         <div class="fix-prompt-modal-content">
             <span class="close-modal" onclick="closeFixPromptModal()">&times;</span>
-            <h3 style="margin-bottom: 20px;">📝 修复任务预览与编辑</h3>
-            
+            <h3 style="margin-bottom: 20px;">📝 Fix Task Preview and Edit</h3>
+
             <div style="margin-bottom: 15px;">
-                <label for="fix-prompt-editor" style="font-weight: 600; color: #495057;">修复 Prompt（可编辑）：</label>
+                <label for="fix-prompt-editor" style="font-weight: 600; color: #495057;">Fix Prompt (editable):</label>
             </div>
-            
-            <textarea id="fix-prompt-editor" class="fix-prompt-editor" 
-                      placeholder="正在生成修复 prompt..."></textarea>
-            
+
+            <textarea id="fix-prompt-editor" class="fix-prompt-editor"
+                placeholder="Generating fix prompt..."></textarea>
+
             <div class="fix-prompt-buttons">
                 <button class="btn btn-danger" onclick="closeFixPromptModal()">
-                    ❌ 取消
+                    ❌ Cancel
                 </button>
                 <button class="btn btn-success" id="execute-fix-btn" onclick="executeFixWithPrompt()">
-                    🚀 开始执行修复
+                    🚀 Start executing fix
                 </button>
             </div>
 
-            <!-- 修复执行输出区域 -->
+            <!-- Fix execution output area -->
             <div id="fix-output-area" class="fix-output-area">
-                <h4 style="margin-bottom: 15px;">🔧 修复执行过程</h4>
+                <h4 style="margin-bottom: 15px;">🔧 Fix Execution Process</h4>
                 <div id="fix-status"></div>
                 <div id="fix-output-content" class="fix-output-content"></div>
                 <div id="verification-url" class="verification-url">
-                    <strong>🎉 验证完成！</strong><br>
-                    查看验证结果：<a id="verification-link" href="#" target="_blank"></a>
+                    <strong>🎉 Verification Completed!</strong><br>
+                    View verification result: <a id="verification-link" href="#" target="_blank"></a>
                 </div>
             </div>
         </div>
@@ -736,34 +742,34 @@
         let processedRules = [];
         let sanityAggregated = null;
         let stopAnalysisFlag = false;
-        const analysisControllers = new Map(); // 为每个分析维护独立的控制器
-        let lastFixAnalyses = []; // 顺序修复用的分析结果缓存
-        let fixAbortController = null; // 顺序修复的控制器（用于暂停/终止）
+        const analysisControllers = new Map(); // Maintain controller per analysis
+        let lastFixAnalyses = []; // Cache for sequential fix
+        let fixAbortController = null; // Controller for sequential fix (pause/terminate)
 
-        // 加载 <workdir>/certora/conf 下的 .conf 到下拉框
+        // Load .conf under <workdir>/certora/conf into dropdown
         async function loadConfOptions() {
             try {
                 const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
                 const select = document.getElementById('certora-conf-select');
                 const help = document.getElementById('conf-help');
                 if (!projectPath) {
-                    select.innerHTML = '<option value="">（请先填写上方项目路径）</option>';
+                    select.innerHTML = '<option value="">(Enter project path above first)</option>';
                     return;
                 }
-                select.innerHTML = '<option value="">（加载中…）</option>';
+                select.innerHTML = '<option value="">(Loading…)</option>';
                 const resp = await fetch('http://localhost:3002/list-conf?projectPath=' + encodeURIComponent(projectPath));
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 const data = await resp.json();
-                if (!data.success) throw new Error(data.error || '加载失败');
+                if (!data.success) throw new Error(data.error || 'Load failed');
 
                 const files = Array.isArray(data.files) ? data.files : [];
                 if (files.length === 0) {
-                    select.innerHTML = '<option value="">（未在 ' + (data.baseDir || (projectPath + '/certora/conf')) + ' 找到 .conf）</option>';
+                    select.innerHTML = '<option value="">(No .conf found in ' + (data.baseDir || (projectPath + '/certora/conf')) + ')</option>';
                     return;
                 }
-                // 填充选项（显示相对路径，值为绝对路径方便后端）
+                // Fill options (display relPath, value fullPath)
                 select.innerHTML = '';
-                files.sort((a,b) => a.relPath.localeCompare(b.relPath));
+                files.sort((a, b) => a.relPath.localeCompare(b.relPath));
                 for (const f of files) {
                     const opt = document.createElement('option');
                     opt.value = f.fullPath;
@@ -772,18 +778,18 @@
                 }
             } catch (e) {
                 const select = document.getElementById('certora-conf-select');
-                select.innerHTML = '<option value="">（加载失败：' + (e.message || e) + '）</option>';
+                select.innerHTML = '<option value="">(Load failed: ' + (e.message || e) + ')</option>';
             }
         }
 
-        // 处理 Codex 输出，只保留最终回答
+        // Process Codex output and keep only final answer
         function extractCodexAnswer(fullOutput) {
-            // 查找最后一个时间戳标记和 "tokens used:" 之间的内容
+            // Find content between last timestamp and "tokens used:"
             const lines = fullOutput.split('\n');
             let lastTimeIndex = -1;
             let tokensUsedIndex = -1;
 
-            // 查找最后一个时间戳标记，格式如 [2025-01-01T10:30:00]
+            // Find last timestamp like [2025-01-01T10:30:00]
             for (let i = lines.length - 1; i >= 0; i--) {
                 if (lines[i].includes('tokens used:')) {
                     tokensUsedIndex = i;
@@ -795,18 +801,18 @@
             }
 
             if (lastTimeIndex >= 0 && tokensUsedIndex > lastTimeIndex) {
-                // 提取最后一个时间戳后到 tokens used 之前的内容
+                // Extract content after last timestamp until tokens used
                 const answerLines = lines.slice(lastTimeIndex + 1, tokensUsedIndex);
                 let answer = answerLines.join('\n').trim();
 
-                // 移除可能的额外标记
+                // Remove extra markers
                 answer = answer.replace(/^(Assistant|AI|Codex):\s*/gm, '');
                 answer = answer.replace(/^\s*[-•]\s*/gm, '');
 
                 return answer || fullOutput;
             }
 
-            // 如果没找到时间戳，尝试查找 "codex" 标记
+            // If no timestamp, try look for "codex" marker
             let lastCodexIndex = -1;
             for (let i = 0; i < lines.length; i++) {
                 if (lines[i].includes('] codex')) {
@@ -823,25 +829,25 @@
                 return answerLines.join('\n').trim();
             }
 
-            // 如果都没找到，返回原内容
+            // If nothing found, return original
             return fullOutput;
         }
 
         async function analyzeUrl() {
             const url = document.getElementById('certora-url').value.trim();
             if (!url) {
-                showStatus('请输入URL', 'error');
+                showStatus('Please enter URL', 'error');
                 return;
             }
 
             const btn = document.getElementById('analyzeBtn');
             btn.disabled = true;
-            btn.textContent = '⏳ 获取中...';
+            btn.textContent = '⏳ Processing...';
 
-            showStatus('正在获取验证数据...', 'info');
+            showStatus('Getting verification data...', 'info');
 
             try {
-                // 调用本地服务
+                // Call local service
                 const response = await fetch('http://localhost:3002/analyze-and-fetch', {
                     method: 'POST',
                     headers: {
@@ -852,13 +858,13 @@
 
                 if (!response.ok) {
                     const error = await response.json();
-                    throw new Error(error.error || `服务器错误: ${response.status}`);
+                    throw new Error(error.error || `Server error: ${response.status}`);
                 }
 
                 const data = await response.json();
                 allRulesData = data;
 
-                // 保存所有JSON内容
+                // Cache all JSON contents
                 data.rules.forEach(rule => {
                     if (rule.content) {
                         jsonContents[rule.outputFile] = rule.content;
@@ -866,21 +872,21 @@
                 });
 
                 processData(data);
-                showStatus(`✅ 成功获取 ${data.rules.length} 个规则的数据`, 'success');
+                showStatus(`✅ Successfully retrieved ${data.rules.length} rules data`, 'success');
 
             } catch (error) {
                 console.error('Error:', error);
-                showStatus(`错误: ${error.message}。请确保运行了: node scripts/certora_auto_server.mjs`, 'error');
+                showStatus(`Error: ${error.message}. Please ensure you ran: node scripts/certora_auto_server.mjs`, 'error');
             } finally {
                 btn.disabled = false;
-                btn.textContent = '🔍 获取验证数据';
+                btn.textContent = '🔍 Get verification data';
             }
         }
 
         function processData(data) {
             processedRules = [];
 
-            // 处理 VIOLATED 规则
+            // Process VIOLATED rules
             data.rules.filter(r => r.status === 'VIOLATED').forEach(rule => {
                 const markdown = rule.content ? convertToMarkdown(rule) : '';
                 processedRules.push({
@@ -891,16 +897,16 @@
                 });
             });
 
-            // 整合 SANITY_FAILED 规则
+            // Aggregate SANITY_FAILED rules
             const sanityFailed = data.rules.filter(r => r.status === 'SANITY_FAILED');
             if (sanityFailed.length > 0) {
                 sanityAggregated = aggregateSanityFailures(sanityFailed);
                 processedRules.push({
-                    ruleName: '汇总: Sanity Failed 规则',
+                    ruleName: 'Summary: Sanity Failed Rules',
                     status: 'SANITY_FAILED',
                     type: 'SANITY_FAILED',
                     markdown: sanityAggregated,
-                    displayName: '汇总: Sanity Failed 规则',
+                    displayName: 'Summary: Sanity Failed Rules',
                     outputFile: 'sanity_aggregated'
                 });
             }
@@ -924,7 +930,7 @@
             });
 
             return Array.from(sanityMap.entries()).map(([rule, funcs]) =>
-                `规则 ${rule} 在以下函数中 sanity failed:\n${Array.from(funcs).map(f => `- ${f}`).join('\n')}`
+                `Rule ${rule} sanity failed in the following functions:\n${Array.from(funcs).map(f => `- ${f}`).join('\n')}`
             ).join('\n\n');
         }
 
@@ -940,10 +946,10 @@
                     <td>
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <button class="view-btn" onclick="viewMarkdown(${index})">
-                                📄 查看
+                                📄 View
                             </button>
                             <button class="copy-btn" onclick="copyMarkdown(${index})">
-                                📋 复制MD
+                                📋 Copy MD
                             </button>
                         </div>
                     </td>
@@ -953,11 +959,11 @@
                                       id="analysis-${rule.outputFile}" 
                                       data-output-file="${rule.outputFile}"
                                       data-rule-name="${rule.displayName}"
-                                      placeholder="可直接在此编辑 Codex 分析结果（或先点击分析）"></textarea>
+                                      placeholder="You can edit Codex analysis here (or click Analyze first)"></textarea>
                             <div style="display: flex; gap: 5px; position: absolute; top: 5px; right: 5px;">
                                 <button class="copy-btn-small" 
                                         onclick="copyCodexAnalysis('${rule.outputFile}')"
-                                        title="复制">
+                                        title="Copy">
                                     📋
                                 </button>
                             </div>
@@ -967,10 +973,10 @@
                         <div style="display: flex; gap: 5px;">
                             <button class="btn btn-primary" id="analyze-btn-${rule.outputFile}" 
                                     style="padding: 6px 12px; font-size: 14px;" 
-                                    onclick="analyzeRule(${index})">分析</button>
+                                    onclick="analyzeRule(${index})">Analyze</button>
                             <button class="btn btn-danger" id="stop-btn-${rule.outputFile}" 
                                     style="padding: 6px 12px; font-size: 14px; display: none;" 
-                                    onclick="stopSingleAnalysis('${rule.outputFile}')">停止</button>
+                                    onclick="stopSingleAnalysis('${rule.outputFile}')">Stop</button>
                         </div>
                     </td>
                 `;
@@ -980,7 +986,7 @@
             document.getElementById('result-section').style.display = 'block';
         }
 
-        // 预览区直接可编辑，无需切换编辑模式或弹窗
+            // Preview area is editable directly; no modal/switch needed
 
         function formatRuleName(name) {
             const parts = name.split(' > ');
@@ -1003,72 +1009,72 @@
 
         async function analyzeRule(index, isBatchAnalysis = false, retryCount = 0) {
             const maxRetries = 3;
-            
-            // 只有在批量分析时才检查 stopAnalysisFlag
+
+            // Only check stopAnalysisFlag during batch analysis
             if (isBatchAnalysis && stopAnalysisFlag) {
-                console.log('批量分析被停止标志阻止');
+                console.log('Batch analysis prevented by stop flag');
                 return;
             }
 
             const rule = processedRules[index];
             if (!rule) {
-                console.error(`规则索引 ${index} 不存在`);
+                console.error(`Rule index ${index} does not exist`);
                 return;
             }
 
             const outputFile = rule.outputFile;
 
-            console.log(`开始流式分析规则: ${outputFile}, 批量分析: ${isBatchAnalysis}, 重试次数: ${retryCount}`);
-            console.log(`规则类型: ${rule.type}, Markdown长度: ${rule.markdown ? rule.markdown.length : 0}`);
+            console.log(`Start streaming analysis: ${outputFile}, batch: ${isBatchAnalysis}, retry: ${retryCount}`);
+            console.log(`Rule type: ${rule.type}, Markdown length: ${rule.markdown ? rule.markdown.length : 0}`);
 
             const textarea = document.getElementById(`analysis-${outputFile}`);
             const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
             const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
 
             if (!textarea || !analyzeBtn) {
-                console.error(`找不到UI元素: textarea=${!!textarea}, analyzeBtn=${!!analyzeBtn}`);
+                console.error(`UI elements not found: textarea=${!!textarea}, analyzeBtn=${!!analyzeBtn}`);
                 return;
             }
 
-            // 如果这个规则已经在分析中，不重复分析
+            // If already analyzing this rule, skip
             if (analysisControllers.has(outputFile)) {
-                console.log(`规则 ${outputFile} 已在分析中，跳过`);
+                console.log(`Rule ${outputFile} is already being analyzed, skipping`);
                 return;
             }
 
-            // 显示停止按钮，隐藏分析按钮
+            // Show Stop, hide Analyze
             if (analyzeBtn) analyzeBtn.style.display = 'none';
             if (stopBtn) stopBtn.style.display = 'inline-block';
 
             if (retryCount > 0) {
-                textarea.value = `重试中... (${retryCount}/${maxRetries})`;
+                textarea.value = `Retrying... (${retryCount}/${maxRetries})`;
             } else {
-                textarea.value = '正在连接Codex...';
+                textarea.value = 'Connecting to Codex...';
             }
             textarea.disabled = true;
 
-            // 为这个特定的分析创建 AbortController
+            // Create AbortController for this analysis
             const controller = new AbortController();
             analysisControllers.set(outputFile, controller);
 
-            console.log(`创建了控制器，当前控制器数量: ${analysisControllers.size}`);
+            console.log(`Created controller, current count: ${analysisControllers.size}`);
 
-            // 检查控制器是否立即被中止
+            // Check if controller is already aborted
             if (controller.signal.aborted) {
-                console.error('控制器创建后立即被中止！');
+                console.error('Controller aborted immediately after creation!');
                 analysisControllers.delete(outputFile);
-                textarea.value = '分析失败：控制器被中止';
+                textarea.value = 'Analysis failed: controller aborted';
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
                 return;
             }
 
             try {
-                console.log(`发送流式分析请求: ${rule.type}, Markdown前100字符: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
+                console.log(`Sending streaming analysis request: ${rule.type}, first 100 chars: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
 
-                // 确保 markdown 存在
+                // Ensure markdown exists
                 if (!rule.markdown) {
-                    throw new Error('Markdown内容为空');
+                    throw new Error('Markdown content is empty');
                 }
 
                 const projectPathMain = (document.getElementById('project-path-main')?.value || '').trim();
@@ -1080,9 +1086,9 @@
                     requestBody.projectPath = projectPathMain;
                 }
 
-                console.log(`请求体大小: ${JSON.stringify(requestBody).length} 字节`);
+                console.log(`Request body size: ${JSON.stringify(requestBody).length} bytes`);
 
-                // 使用流式端点
+                // Use streaming endpoint
                 const response = await fetch('http://localhost:3002/analyze-rule-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1090,45 +1096,45 @@
                     signal: controller.signal
                 });
 
-                console.log(`收到响应: ${response.status}`);
+                console.log(`Received response: ${response.status}`);
 
-                // 检查响应是否正常
+                // Check response ok
                 if (!response.ok) {
                     if (response.status === 500 && retryCount < maxRetries) {
-                        // HTTP 500 错误，进行重试
-                        console.log(`HTTP 500错误，将在2秒后重试 (${retryCount + 1}/${maxRetries})`);
+                        // HTTP 500: retry
+                        console.log(`HTTP 500 error, retrying in 2s (${retryCount + 1}/${maxRetries})`);
                         analysisControllers.delete(outputFile);
-                        
-                        // 等待2秒后重试
+
+                        // Wait 2s then retry
                         await new Promise(resolve => setTimeout(resolve, 2000));
-                        
+
                         return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
                     }
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                // 处理SSE流式响应
+                // Handle SSE streaming response
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
-                // 为该规则建立持久上下文，避免每次回调创建新对象导致丢失状态
+                // Build persistent context for this rule
                 const ctx = { fullThinkingProcess: '', finalResult: '' };
 
-                textarea.value = ''; // 清空初始内容
+                textarea.value = ''; // Clear initial content
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    // 检查是否被中止
+                    // Check abort
                     if (controller.signal.aborted) {
                         reader.cancel();
-                        throw new Error('分析被用户停止');
+                        throw new Error('Analysis stopped by user');
                     }
 
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
-                    buffer = lines.pop(); // 保留不完整的行
+                    buffer = lines.pop(); // keep incomplete line
 
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
@@ -1136,107 +1142,107 @@
                                 const data = JSON.parse(line.slice(6));
                                 handleAnalysisStreamData(data, textarea, outputFile, ctx);
                             } catch (e) {
-                                console.error('解析SSE数据错误:', e, line);
+                                console.error('Error parsing SSE data:', e, line);
                             }
                         }
                     }
                 }
 
-                console.log(`流式分析完成: ${outputFile}`);
+                console.log(`Streaming analysis completed: ${outputFile}`);
 
             } catch (error) {
-                console.error(`分析出错: ${outputFile}`, error);
-                console.error('错误详情:', {
+                console.error(`Analysis error: ${outputFile}`, error);
+                console.error('Error details:', {
                     name: error.name,
                     message: error.message,
                     stack: error.stack
                 });
 
                 if (error.name === 'AbortError') {
-                    console.log('请求被中止，控制器状态:', controller.signal.aborted);
-                    textarea.value = '分析已取消';
+                    console.log('Request aborted, controller state:', controller.signal.aborted);
+                    textarea.value = 'Analysis cancelled';
                 } else if (error.message.includes('Failed to fetch')) {
                     if (retryCount < maxRetries) {
-                        console.log(`网络错误，将重试: ${error.message}`);
+                        console.log(`Network error, will retry: ${error.message}`);
                         analysisControllers.delete(outputFile);
                         await new Promise(resolve => setTimeout(resolve, 2000));
                         return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
                     }
-                    textarea.value = '无法连接到服务器，请确保服务器正在运行';
-                } else if (error.message === 'Markdown内容为空') {
-                    textarea.value = '错误：没有可分析的内容';
+                    textarea.value = 'Cannot connect to server. Please ensure the server is running';
+                } else if (error.message === 'Markdown content is empty') {
+                    textarea.value = 'Error: no content to analyze';
                 } else {
                     if (retryCount < maxRetries && !error.name === 'AbortError') {
-                        console.log(`通用错误，将重试: ${error.message}`);
+                        console.log(`Generic error, will retry: ${error.message}`);
                         analysisControllers.delete(outputFile);
                         await new Promise(resolve => setTimeout(resolve, 2000));
                         return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
                     }
-                    textarea.value = `错误: ${error.message}`;
+                    textarea.value = `Error: ${error.message}`;
                 }
             } finally {
                 textarea.disabled = false;
-                // 恢复按钮状态
+                // Restore button state
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
-                // 清理控制器
+                // Cleanup controller
                 analysisControllers.delete(outputFile);
-                console.log(`清理控制器，剩余控制器数量: ${analysisControllers.size}`);
+                console.log(`Cleanup controller, remaining count: ${analysisControllers.size}`);
             }
         }
 
         function handleAnalysisStreamData(data, textarea, outputFile, context) {
             switch (data.type) {
                 case 'info':
-                    // 显示连接信息，但不添加到思考过程
-                    if (data.message.includes('开始分析')) {
-                        textarea.value = 'Codex 开始思考...';
+                    // Show connection info, but don't mix into thinking content
+                    if (/start(ing)? analysis/i.test(data.message)) {
+                        textarea.value = 'Codex is thinking...';
                     }
                     break;
-                    
+
                 case 'output':
-                    // 仅显示一次系统头（服务端只会发送这一段）
+                    // Show system header once (server sends this section only)
                     if (data.message && data.message.trim()) {
                         context.fullThinkingProcess = data.message.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
                         textarea.value = context.fullThinkingProcess;
                         textarea.scrollTop = textarea.scrollHeight;
                     }
                     break;
-                    
+
                 case 'final':
-                    // 保存最终结果
+                    // Save final result
                     context.finalResult = data.message;
                     break;
-                    
+
                 case 'success':
-                    // 分析成功完成，用最终结果替换思考过程
+                    // Analysis succeeded; replace thinking process with final result
                     let finalContent = '';
                     if (context.finalResult && context.finalResult.trim()) {
                         finalContent = context.finalResult.trim();
                     } else {
-                        // 如果没有最终结果，从 fullThinkingProcess（可能仅含系统头）与后台完整输出中提取
+                        // If no explicit final result, extract from fullThinkingProcess
                         const extracted = extractCodexAnswer(context.fullThinkingProcess);
                         finalContent = extracted ? extracted.trim() : context.fullThinkingProcess.trim();
                     }
-                    // 仅展示最终结果（头部信息只在开始时显示，不混入最终内容）
+                    // Show only the final result (system header shown at start only)
                     textarea.value = finalContent;
-                    // 预览区默认可编辑，无需再切换
-                    console.log(`流式分析成功: ${outputFile}`);
+                    // Preview is editable by default
+                    console.log(`Streaming analysis success: ${outputFile}`);
                     break;
-                    
+
                 case 'error':
-                    // 显示错误信息
-                    textarea.value = `分析错误: ${data.message}`;
-                    console.error(`流式分析错误: ${outputFile}`, data.message);
+                    // Show error message
+                    textarea.value = `Analysis error: ${data.message}`;
+                    console.error(`Streaming analysis error: ${outputFile}`, data.message);
                     break;
-                    
+
                 case 'complete':
-                    // 分析完成（无论成功还是失败）
-                    console.log(`流式分析结束: ${outputFile}`);
+                    // Analysis finished (success or failure)
+                    console.log(`Streaming analysis finished: ${outputFile}`);
                     break;
-                    
+
                 default:
-                    console.log(`未知的流式数据类型: ${data.type}`, data);
+                    console.log(`Unknown streamed data type: ${data.type}`, data);
                     break;
             }
         }
@@ -1252,11 +1258,11 @@
             const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
             const textarea = document.getElementById(`analysis-${outputFile}`);
 
-            // 恢复按钮状态
+            // Restore button state
             if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
             if (stopBtn) stopBtn.style.display = 'none';
             if (textarea) {
-                textarea.value = '分析已停止';
+                textarea.value = 'Analysis stopped';
                 textarea.disabled = false;
             }
         }
@@ -1265,10 +1271,10 @@
 
         async function toggleBatchAnalysis() {
             if (isBatchAnalyzing) {
-                // 当前正在分析，执行停止操作
+                // Currently analyzing — perform stop
                 stopAnalysis();
             } else {
-                // 当前未在分析，开始批量分析
+                // Not analyzing — start batch analysis
                 await analyzeAllRules();
             }
         }
@@ -1276,105 +1282,109 @@
         async function analyzeAllRules() {
             isBatchAnalyzing = true;
             stopAnalysisFlag = false;
-            
-            // 更新按钮状态
+
+            // Update batch button state
             const batchBtn = document.getElementById('batchAnalyzeBtn');
             batchBtn.className = 'btn btn-danger';
-            batchBtn.innerHTML = '⏹️ 停止分析';
-            
-            showStatus('开始批量分析...', 'info');
+            batchBtn.innerHTML = '⏹️ Stop Analysis';
 
-            // 并发执行所有分析任务
+            showStatus('Starting batch analysis...', 'info');
+
+            // Start all analyses concurrently
             const analysisPromises = [];
             for (let i = 0; i < processedRules.length; i++) {
                 if (stopAnalysisFlag) {
                     break;
                 }
-                // 不等待每个分析完成，直接推入Promise数组
+                // Push promises without waiting for each one
                 analysisPromises.push(analyzeRule(i, true));
             }
 
             try {
-                // 等待所有分析任务完成
+                // Wait for all analyses to settle
                 await Promise.allSettled(analysisPromises);
             } catch (error) {
-                console.error('批量分析过程中出错:', error);
+                console.error('Error during batch analysis:', error);
             }
 
-            // 恢复按钮状态
+            // Restore button state
             isBatchAnalyzing = false;
             batchBtn.className = 'btn btn-success';
-            batchBtn.innerHTML = '🤖 Codex 分析所有规则';
-            
+            batchBtn.innerHTML = '🤖 Codex analyze all rules';
+
             if (!stopAnalysisFlag) {
-                showStatus('✅ 所有规则分析完成', 'success');
+                showStatus('✅ All rules analysis completed', 'success');
             } else {
-                showStatus('批量分析已停止', 'info');
+                showStatus('Batch analysis stopped', 'info');
             }
         }
 
         function stopAnalysis() {
             stopAnalysisFlag = true;
             isBatchAnalyzing = false;
-            
-            // 恢复批量分析按钮状态
+
+            // Restore batch analyze button state
             const batchBtn = document.getElementById('batchAnalyzeBtn');
             if (batchBtn) {
                 batchBtn.className = 'btn btn-success';
-                batchBtn.innerHTML = '🤖 Codex 分析所有规则';
+                batchBtn.innerHTML = '🤖 Codex analyze all rules';
             }
-            
-            // 停止所有正在进行的分析
+
+            // Stop all ongoing analyses
             analysisControllers.forEach((controller, outputFile) => {
                 controller.abort();
-                // 更新对应的UI
+                // Update corresponding UI
                 const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
                 const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
                 const textarea = document.getElementById(`analysis-${outputFile}`);
 
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
-                if (textarea && textarea.value === '分析中...') {
-                    textarea.value = '批量分析已停止';
+                if (textarea && textarea.value === 'Analyzing...') {
+                    textarea.value = 'Batch analysis stopped';
                     textarea.disabled = false;
                 }
             });
             analysisControllers.clear();
 
-            showStatus('批量分析已停止', 'info');
+            showStatus('Batch analysis stopped', 'info');
         }
 
         async function fixAll() {
-            // 仅修复“已有分析结论”的项；不会自动触发批量分析
+            // Only fix items with existing analysis; does not auto-start batch analysis
             const analyses = [];
 
-            // 优先从DOM中收集，避免因ID冲突或processedRules不一致导致漏收
+            // Prefer collecting from DOM to avoid ID conflicts or stale processedRules
             const tas = Array.from(document.querySelectorAll('textarea.codex-analysis'));
             tas.forEach(ta => {
                 const val = (ta.value || '').trim();
                 if (!val) return;
-                if (val.includes('分析中...') || val.includes('批量分析已停止') || val.startsWith('重试中...')) return;
+                if (val.includes('Analyzing...') || val.includes('Batch analysis stopped') || val.startsWith('Retrying...')) return;
                 if (val.length < 3) return;
-                if (/点击分析按钮/.test(val)) return;
+                if (/Click Analyze/.test(val)) return;
 
                 const ruleName = ta.dataset.ruleName || '';
                 analyses.push({ text: val, ruleName });
             });
 
             if (analyses.length === 0) {
-                showStatus('没有可用的分析结果，只有完成 Codex 分析的项才会进入修复', 'error');
+                showStatus('No available analysis results, only items that completed Codex analysis will enter fix', 'error');
                 return;
             }
 
-            // 缓存到全局，供顺序修复使用
+            // Cache to global for sequential fix
             lastFixAnalyses = analyses;
 
-            // 将选中条目列表也展示出来，便于用户核对
-            const namesPreview = analyses.map((a, i) => `${i + 1}. ${a.ruleName || '(未命名规则)'}`).join('；');
-            showStatus(`正在生成修复 prompt（共 ${analyses.length} 项）：${namesPreview}`, 'info');
+            // Initialize rule status tracking and show multi-line list with status
+            window.ruleFixStatus = analyses.map((a, i) => ({
+                index: i + 1,
+                ruleName: a.ruleName || '(Unnamed Rule)',
+                status: 'Pending'
+            }));
+            updateStatusDisplay();
 
             try {
-                // 第一步：生成 prompt
+                // Step 1: generate prompt
                 const response = await fetch('http://localhost:3002/generate-fix-prompt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1383,19 +1393,19 @@
 
                 const result = await response.json();
                 if (result.success) {
-                    // 直接执行修复，不显示预览模态框
+                    // Execute fix directly; no preview modal
                     executeFixDirectly(result.prompt);
                 } else {
-                    showStatus(`生成 prompt 失败: ${result.error}`, 'error');
+                    showStatus(`Generate prompt failed: ${result.error}`, 'error');
                 }
             } catch (error) {
-                showStatus(`错误: ${error.message}`, 'error');
+                showStatus(`Error: ${error.message}`, 'error');
             }
         }
 
         function closeFixPromptModal() {
             document.getElementById('fix-prompt-modal').style.display = 'none';
-            // 重置输出区域
+            // Reset output area
             document.getElementById('fix-output-area').style.display = 'none';
             document.getElementById('fix-output-content').textContent = '';
             document.getElementById('verification-url').style.display = 'none';
@@ -1408,32 +1418,32 @@
                 document.getElementById('certora-conf-path')?.value ||
                 ''
             ).trim();
-            
+
             if (!prompt) {
-                showStatus('修复 prompt 为空', 'error');
+                showStatus('Fix prompt is empty', 'error');
                 return;
             }
 
-            // 显示主界面输出区域
+            // Show main output area
             document.getElementById('main-fix-output').style.display = 'block';
             document.getElementById('main-fix-content').textContent = '';
             document.getElementById('main-verification-url').style.display = 'none';
-            // 显示停止按钮
+            // Show stop button
             document.getElementById('main-fix-controls').style.display = 'block';
-            
-            // 显示项目路径信息
+
+            // Show project path info
             if (projectPath) {
-                showMainFixStatus(`正在执行修复任务... 项目路径: ${projectPath}`, 'info');
+                showMainFixStatus(`Executing fix task... Project path: ${projectPath}`, 'info');
             } else {
-                showMainFixStatus('正在执行修复任务... 使用自动项目搜索', 'info');
+                showMainFixStatus('Executing fix task... Using automatic project search', 'info');
             }
 
             try {
-                // 使用顺序流式端点执行修复，包含项目路径与conf路径
+                // Execute fix using sequential streaming endpoint, include project/conf paths
                 const requestBody = { basePrompt: prompt, analyses: lastFixAnalyses };
                 if (projectPath) requestBody.projectPath = projectPath;
                 if (confPath) requestBody.confPath = confPath;
-                // 创建并保存控制器，便于暂停
+                // Create and save controller for cancellation
                 fixAbortController = new AbortController();
 
                 const response = await fetch('http://localhost:3002/fix-sequential-stream', {
@@ -1457,7 +1467,7 @@
 
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
-                    buffer = lines.pop(); // 保留不完整的行
+                    buffer = lines.pop(); // keep incomplete line
 
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
@@ -1465,20 +1475,20 @@
                                 const data = JSON.parse(line.slice(6));
                                 handleMainFixStreamData(data);
                             } catch (e) {
-                                console.error('解析SSE数据错误:', e, line);
+                                console.error('Error parsing SSE data:', e, line);
                             }
                         }
                     }
                 }
             } catch (error) {
-                console.error('修复执行错误:', error);
+                console.error('Fix execution error:', error);
                 if (error.name === 'AbortError') {
-                    showMainFixStatus('已暂停并请求终止 Codex 进程', 'info');
+                    showMainFixStatus('Paused and requested termination of Codex processes', 'info');
                 } else {
-                    showMainFixStatus(`执行错误: ${error.message}`, 'error');
+                    showMainFixStatus(`Execution error: ${error.message}`, 'error');
                 }
             } finally {
-                // 无论成功或失败，隐藏停止按钮
+                // Hide stop button regardless of result
                 document.getElementById('main-fix-controls').style.display = 'none';
                 fixAbortController = null;
             }
@@ -1492,35 +1502,35 @@
                 document.getElementById('certora-conf-path')?.value ||
                 ''
             ).trim();
-            
+
             if (!prompt) {
-                showFixStatus('请输入修复 prompt', 'error');
-                return;
+            showFixStatus('Please enter fix prompt', 'error');
+            return;
             }
 
-            // 关闭预览模态框
+            // Close preview modal
             document.getElementById('fix-prompt-modal').style.display = 'none';
-            
-            // 显示主界面输出区域
+
+            // Show main output area
             document.getElementById('main-fix-output').style.display = 'block';
             document.getElementById('main-fix-content').textContent = '';
             document.getElementById('main-verification-url').style.display = 'none';
-            // 显示停止按钮
+            // Show stop button
             document.getElementById('main-fix-controls').style.display = 'block';
-            
-            // 显示项目路径信息
+
+            // Show project path info
             if (projectPath) {
-                showMainFixStatus(`正在执行修复任务... 项目路径: ${projectPath}`, 'info');
+                showMainFixStatus(`Executing fix task... Project path: ${projectPath}`, 'info');
             } else {
-                showMainFixStatus('正在执行修复任务... 使用自动项目搜索', 'info');
+                showMainFixStatus('Executing fix task... Using automatic project search', 'info');
             }
 
             try {
-                // 使用顺序流式端点执行修复，包含项目路径与conf路径
+                // Use sequential streaming endpoint for fix, include projectPath/confPath
                 const requestBody = { basePrompt: prompt, analyses: lastFixAnalyses };
                 if (projectPath) requestBody.projectPath = projectPath;
                 if (confPath) requestBody.confPath = confPath;
-                // 创建并保存控制器，便于暂停
+                // Create and hold controller for cancellation
                 fixAbortController = new AbortController();
 
                 const response = await fetch('http://localhost:3002/fix-sequential-stream', {
@@ -1544,7 +1554,7 @@
 
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
-                    buffer = lines.pop(); // 保留不完整的行
+                    buffer = lines.pop(); // keep incomplete line
 
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
@@ -1552,20 +1562,20 @@
                                 const data = JSON.parse(line.slice(6));
                                 handleMainFixStreamData(data);
                             } catch (e) {
-                                console.error('解析SSE数据错误:', e, line);
+                                console.error('Error parsing SSE data:', e, line);
                             }
                         }
                     }
                 }
             } catch (error) {
-                console.error('修复执行错误:', error);
+                console.error('Fix execution error:', error);
                 if (error.name === 'AbortError') {
-                    showMainFixStatus('已暂停并请求终止 Codex 进程', 'info');
+                    showMainFixStatus('Paused and requested termination of Codex processes', 'info');
                 } else {
-                    showMainFixStatus(`执行错误: ${error.message}`, 'error');
+                    showMainFixStatus(`Execution error: ${error.message}`, 'error');
                 }
             } finally {
-                // 无论成功或失败，隐藏停止按钮
+                // Hide stop button regardless of result
                 document.getElementById('main-fix-controls').style.display = 'none';
                 fixAbortController = null;
             }
@@ -1573,16 +1583,19 @@
 
         function handleMainFixStreamData(data) {
             const outputContent = document.getElementById('main-fix-content');
-            
+
             switch (data.type) {
                 case 'info':
                     showMainFixStatus(data.message, 'info');
-                    // 同步写入日志区域，避免用户遗漏顶部状态栏
+                    // Mirror status in log area to avoid missing the top bar
                     outputContent.innerHTML += `<span style="color:#0d6efd;">[INFO]</span> ${escapeHtml(data.message)}<br>`;
                     outputContent.scrollTop = outputContent.scrollHeight;
+
+                    // Update per-rule fix status
+                    updateRuleStatus(data.message);
                     break;
                 case 'output':
-                    // 格式化输出，处理时间戳换行
+                    // Format output; handle timestamp line breaks
                     const formattedOutput = formatCodexOutput(data.message);
                     if (formattedOutput) {
                         outputContent.innerHTML += formattedOutput;
@@ -1592,10 +1605,10 @@
                 case 'error':
                     outputContent.innerHTML += `<span style="color: #dc3545; font-weight: bold;">[ERROR] ${data.message}</span>\n`;
                     outputContent.scrollTop = outputContent.scrollHeight;
-                    showMainFixStatus('执行过程中出现错误', 'error');
+                    showMainFixStatus('An error occurred during execution', 'error');
                     break;
                 case 'url':
-                    // 显示验证URL
+                    // Show verification URL
                     document.getElementById('main-verification-link').href = data.message;
                     document.getElementById('main-verification-link').textContent = data.message;
                     document.getElementById('main-verification-url').style.display = 'block';
@@ -1606,14 +1619,151 @@
                     outputContent.scrollTop = outputContent.scrollHeight;
                     break;
                 case 'complete':
-                    showMainFixStatus('修复任务执行完成', 'success');
-                    // 任务自然完成，隐藏停止按钮
+                    showMainFixStatus('Fix execution finished', 'success');
+                    // Natural completion; hide stop button
                     document.getElementById('main-fix-controls').style.display = 'none';
                     break;
             }
         }
 
-        // 简单转义，防止日志中的HTML破坏输出
+        // Update per-rule fix status from server logs
+        function updateRuleStatus(message) {
+            if (!window.ruleFixStatus) return;
+
+            // More flexible pattern matching with case-insensitive and partial matching
+            const msg = message.toLowerCase().trim();
+
+            // Detect start patterns - more flexible matching
+            const startPatterns = [
+                /start(?:ing)?\s+(?:fix\s+)?(\d+)\/(\d+)[\s:]*(.+)/i,
+                /➡️\s*start\s+(\d+)\/(\d+)[\s:]*(.+)/i,
+                /🔧\s*(?:invoking codex|fix)\s*(?:item\s*)?(\d+)/i,
+                /begin(?:ning)?\s+(?:item\s*)?(\d+)/i
+            ];
+
+            for (const pattern of startPatterns) {
+                const match = message.match(pattern);
+                if (match) {
+                    const index = parseInt(match[1]) - 1;
+                    if (window.ruleFixStatus[index]) {
+                        window.ruleFixStatus[index].status = 'In progress';
+                        updateStatusDisplay();
+                        return;
+                    }
+                }
+            }
+
+            // Detect completion patterns - more flexible matching  
+            const completePatterns = [
+                /(?:completed|done|finished|success)\s+(\d+)\/(\d+)/i,
+                /✅.*(?:fix\s+)?(\d+).*completed/i,
+                /📋\s*result\s+(\d+):\s*success/i,
+                /===== \[done\s+(\d+)\/(\d+)\]\s*success/i
+            ];
+
+            for (const pattern of completePatterns) {
+                const match = message.match(pattern);
+                if (match) {
+                    const index = parseInt(match[1]) - 1;
+                    if (window.ruleFixStatus[index]) {
+                        window.ruleFixStatus[index].status = 'Completed';
+                        updateStatusDisplay();
+                        return;
+                    }
+                }
+            }
+
+            // Detect failure patterns
+            const failurePatterns = [
+                /(?:failed|failure|error).*(?:item\s*)?(\d+)/i,
+                /❌.*(?:fix\s+)?(\d+)/i,
+                /📋\s*result\s+(\d+):\s*failure/i,
+                /===== \[done\s+(\d+)\/(\d+)\]\s*failure/i
+            ];
+
+            for (const pattern of failurePatterns) {
+                const match = message.match(pattern);
+                if (match) {
+                    const index = parseInt(match[1]) - 1;
+                    if (window.ruleFixStatus[index]) {
+                        window.ruleFixStatus[index].status = 'Failed';
+                        updateStatusDisplay();
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Update status display with better visual feedback and real-time updates
+        function updateStatusDisplay() {
+            if (!window.ruleFixStatus) return;
+
+            const statusHtml = window.ruleFixStatus.map(item => {
+                let statusColor = '#6c757d'; // default gray (pending)
+                let statusIcon = '⏳'; // waiting icon
+                let statusBg = 'transparent';
+
+                if (item.status === 'In progress') {
+                    statusColor = '#ffc107'; // yellow
+                    statusIcon = '⚙️'; // gear icon
+                    statusBg = '#fff3cd'; // light yellow background
+                } else if (item.status === 'Completed') {
+                    statusColor = '#28a745'; // green
+                    statusIcon = '✅'; // checkmark icon
+                    statusBg = '#d4edda'; // light green background
+                } else if (item.status === 'Failed') {
+                    statusColor = '#dc3545'; // red
+                    statusIcon = '❌'; // X icon
+                    statusBg = '#f8d7da'; // light red background
+                }
+
+                return `<div style="margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: ${statusBg}; border-left: 4px solid ${statusColor}; transition: all 0.3s ease;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span style="font-size: 1.4em; min-width: 24px;">${statusIcon}</span>
+                        <div style="flex: 1;">
+                            <div style="font-weight: 600; color: ${statusColor};">${item.index}. ${escapeHtml(item.ruleName)}</div>
+                            <div style="font-size: 0.9em; color: ${statusColor}; margin-top: 2px;">[${item.status}]</div>
+                        </div>
+                        ${item.status === 'In progress' ? '<div class="loading-spinner" style="width: 16px; height: 16px;"></div>' : ''}
+                    </div>
+                </div>`;
+            }).join('');
+
+            const progressSummary = window.ruleFixStatus.reduce((acc, item) => {
+                acc[item.status] = (acc[item.status] || 0) + 1;
+                return acc;
+            }, {});
+
+            const totalItems = window.ruleFixStatus.length;
+            const completedItems = progressSummary['Completed'] || 0;
+            const inProgressItems = progressSummary['In progress'] || 0;
+            const failedItems = progressSummary['Failed'] || 0;
+            const pendingItems = progressSummary['Pending'] || 0;
+
+            const summaryHtml = `
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #dee2e6;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: #495057;">🎯 修复进度总览</div>
+                    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+                        <span style="color: #28a745;">✅ 已完成: <strong>${completedItems}</strong></span>
+                        <span style="color: #ffc107;">⚙️ 进行中: <strong>${inProgressItems}</strong></span>
+                        <span style="color: #dc3545;">❌ 失败: <strong>${failedItems}</strong></span>
+                        <span style="color: #6c757d;">⏳ 待处理: <strong>${pendingItems}</strong></span>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <div style="background: #e9ecef; height: 8px; border-radius: 4px; overflow: hidden;">
+                            <div style="background: linear-gradient(90deg, #28a745 0%, #20c997 100%); height: 100%; width: ${(completedItems / totalItems) * 100}%; transition: width 0.5s ease;"></div>
+                        </div>
+                        <div style="text-align: center; margin-top: 4px; font-size: 0.9em; color: #6c757d;">
+                            ${completedItems} / ${totalItems} 项任务完成 (${Math.round((completedItems / totalItems) * 100)}%)
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            showStatus(`${summaryHtml}${statusHtml}`, 'info');
+        }
+
+        // Simple escape to prevent HTML from breaking output
         function escapeHtml(str) {
             return String(str)
                 .replace(/&/g, '&amp;')
@@ -1624,31 +1774,31 @@
         }
 
         function formatCodexOutput(output) {
-            // 格式化 Codex 输出，处理时间戳和其他格式
+            // Format Codex output and handle timestamps/others
             let formatted = output;
-            
-            // 处理时间戳格式 [YYYY-MM-DDTHH:MM:SS.xxxZ] 或 [时间戳]
+
+            // Format timestamps like [YYYY-MM-DDTHH:MM:SS.xxxZ]
             formatted = formatted.replace(/(\[\d{4}-\d{2}-\d{2}T[\d:.Z]+\])/g, '\n<span style="color: #667eea; font-weight: bold;">$1</span>');
-            
-            // 处理其他常见的日志格式
+
+            // Highlight common log tags
             formatted = formatted.replace(/\[INFO\]/g, '<span style="color: #28a745;">[INFO]</span>');
             formatted = formatted.replace(/\[ERROR\]/g, '<span style="color: #dc3545;">[ERROR]</span>');
             formatted = formatted.replace(/\[WARNING\]/g, '<span style="color: #ffc107;">[WARNING]</span>');
             formatted = formatted.replace(/\[SUCCESS\]/g, '<span style="color: #20c997;">[SUCCESS]</span>');
-            
-            // 处理 exec、bash、codex 等命令标记
+
+            // Style exec/bash/codex markers
             formatted = formatted.replace(/(\] (exec|bash|codex|thinking)\b)/gi, '<span style="color: #6c757d; font-style: italic;">$1</span>');
-            
-            // 处理 ➡️ ✅ ❌ 等特殊符号，使其更醒目
+
+            // Emphasize special symbols
             formatted = formatted.replace(/(➡️|✅|❌|⚠️)/g, '<span style="font-size: 1.2em;">$1</span>');
-            
-            // 处理规则名和步骤信息
-            formatted = formatted.replace(/(第\s*\d+\/\d+\s*项)/g, '<span style="color: #764ba2; font-weight: bold;">$1</span>');
-            formatted = formatted.replace(/(规则：[^\n]+)/g, '<span style="color: #667eea; font-weight: bold;">$1</span>');
-            
-            // 转换换行符为 HTML 换行
+
+            // Emphasize rule/step info (English)
+            formatted = formatted.replace(/(Item\s*\d+\/\d+|Step\s*\d+\/\d+)/g, '<span style="color: #764ba2; font-weight: bold;">$1</span>');
+            formatted = formatted.replace(/(Rule:\s*[^\n]+)/g, '<span style="color: #667eea; font-weight: bold;">$1</span>');
+
+            // Convert newlines to HTML breaks
             formatted = formatted.replace(/\n/g, '<br>');
-            
+
             return formatted;
         }
 
@@ -1659,23 +1809,23 @@
             statusDiv.style.display = 'block';
         }
 
-        // 停止顺序修复：中止SSE并请求后端终止 Codex 进程
+        // Stop sequential fix: abort SSE and request backend to terminate Codex
         async function stopFix() {
             try {
-                // 先中止前端与服务器的连接，这会触发服务器端 req 'close' 钩子，从而 SIGTERM 当前子进程
+                // Abort client-server connection first to trigger server-side SIGTERM
                 if (fixAbortController) {
                     fixAbortController.abort();
                 }
 
-                showMainFixStatus('正在终止 Codex 进程...', 'info');
+                showMainFixStatus('Terminating Codex processes...', 'info');
 
-                // 再调用后端统一终止接口，确保所有相关 codex 进程被关闭
-                await fetch('http://localhost:3002/kill-processes', { method: 'POST' }).catch(() => {});
-                showMainFixStatus('已请求终止 Codex 进程', 'success');
+                // Then call unified backend kill to ensure all codex processes are closed
+                await fetch('http://localhost:3002/kill-processes', { method: 'POST' }).catch(() => { });
+                showMainFixStatus('Kill request sent to Codex processes', 'success');
             } catch (e) {
-                showMainFixStatus(`终止进程时出错: ${e.message}`, 'error');
+                showMainFixStatus(`Error terminating processes: ${e.message}`, 'error');
             } finally {
-                // 隐藏按钮，避免重复点击
+                // Hide button to avoid repeated clicks
                 document.getElementById('main-fix-controls').style.display = 'none';
             }
         }
@@ -1689,18 +1839,18 @@
         function showStatus(message, type = 'info') {
             const statusDiv = document.getElementById('status-message');
             statusDiv.className = `status-message status-${type}`;
-            statusDiv.textContent = message;
+            // Allow HTML for line breaks and styled status list
+            statusDiv.innerHTML = message;
             statusDiv.style.display = 'block';
         }
 
-        // 根据参考项目重写的convertToMarkdown函数
+        // convertToMarkdown function (rewritten based on reference project)
         function convertToMarkdown(rule) {
             const traceData = rule.content;
             const simplifiedRuleName = rule.ruleName.split('↳')[0].trim();
             let md = `# Certora Trace Analysis\n\n`;
             md += `**Rule:** ${simplifiedRuleName}\n`;
-            md += `**Status:** ${rule.status}\n`;
-            md += `**File:** ${rule.outputFile}\n\n`;
+            md += `**Status:** ${rule.status}\n\n`;
 
             // 1. Call Trace (first position)
             if (traceData.callTrace) {
@@ -1709,15 +1859,15 @@
                 md += convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
             }
 
-            // 2. Variables (second position) - 直接从variables数组中提取
+            // 2. Variables (second) - from variables array
             md += `\n## 📊 Variables\n\n`;
             if (traceData.variables && Array.isArray(traceData.variables) && traceData.variables.length > 0) {
                 md += renderVariablesFromArray(traceData.variables);
             } else {
-                md += `暂无变量数据\n\n`;
+                md += `No variable data\n\n`;
             }
 
-            // 3. Global State Diff (third position) - 从Call Trace中的Global State节点计算变化
+            // 3. Global State Diff (third) - compute from Call Trace Global State nodes
             const globalStateDiff = calculateGlobalStateDiff(traceData.callTrace);
             if (Object.keys(globalStateDiff).length > 0) {
                 md += `## 🔄 Global State Diff\n\n`;
@@ -1762,7 +1912,7 @@
             return md;
         }
 
-        // Call Trace转换 - 参考项目版本
+        // Call Trace conversion - reference implementation
         function convertTraceToMarkdown(node, level, context = { counter: 1 }) {
             const indent = '  '.repeat(level);
             let md = '';
@@ -1775,7 +1925,7 @@
 
                     if (arg.value !== undefined) {
                         value = arg.value;
-                        // 如果有多个值表示，优先显示可读性高的
+                        // If multiple representations exist, prefer the more readable one
                         if (arg.values && arg.values.length > 1) {
                             const decValue = arg.values.find(v => !v.startsWith('0x') && v !== arg.value && !isNaN(v));
                             if (decValue && parseInt(decValue) < 1000000) {
@@ -1807,32 +1957,32 @@
             return md;
         }
 
-        // 计算Global State差异 - 参考项目版本  
+        // Compute Global State differences - reference implementation  
         function calculateGlobalStateDiff(callTrace) {
             const globalStateNodes = [];
 
-            // 收集所有Global State节点
+            // Collect all Global State nodes
             collectGlobalStateNodes(callTrace, globalStateNodes);
 
             if (globalStateNodes.length === 0) {
                 return {};
             }
 
-            // 提取第一个和最后一个Global State的状态
+            // Extract first and last Global State states
             const firstState = extractStateFromGlobalNode(globalStateNodes[0]);
             const lastState = extractStateFromGlobalNode(globalStateNodes[globalStateNodes.length - 1]);
 
-            // 计算差异
+            // Compute differences
             const diff = {};
 
-            // 收集所有状态键
+            // Collect all state keys
             const allKeys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
 
             allKeys.forEach(key => {
                 const firstValue = firstState[key];
                 const lastValue = lastState[key];
 
-                // 只有当值确实发生变化时才记录
+                // Record only if value changes
                 if (firstValue !== lastValue) {
                     diff[key] = {
                         from: firstValue || 'undefined',
@@ -1840,7 +1990,7 @@
                         changed: true
                     };
                 } else if (firstValue && lastValue) {
-                    // 值没有变化，但存在于两个状态中
+                    // Value unchanged but present in both states
                     diff[key] = {
                         from: firstValue,
                         to: lastValue,
@@ -1852,7 +2002,7 @@
             return diff;
         }
 
-        // 递归收集所有Global State节点
+        // Recursively collect all Global State nodes
         function collectGlobalStateNodes(node, globalStateNodes) {
             if (node && node.message && node.message.text === "Global State") {
                 globalStateNodes.push(node);
@@ -1865,7 +2015,7 @@
             }
         }
 
-        // 从Global State节点中提取状态信息
+        // Extract state info from Global State node
         function extractStateFromGlobalNode(globalStateNode) {
             const state = {};
 
@@ -1878,11 +2028,11 @@
             return state;
         }
 
-        // 递归提取状态信息
+        // Recursively extract state info
         function extractStateRecursively(node, state) {
-            // 如果节点有arguments，说明这是一个状态记录
+            // If node has arguments, this indicates a state record
             if (node.message && node.message.arguments && node.message.arguments.length > 0) {
-                // 替换占位符得到完整的状态路径
+                // Replace placeholders to get the full state path
                 let fullPath = node.message.text;
                 let stateValue = null;
 
@@ -1890,10 +2040,10 @@
                     const placeholder = `{${index}}`;
                     if (fullPath.includes(placeholder)) {
                         if (arg.value && arg.value !== '*') {
-                            // 使用最易读的值表示
+                            // Prefer the most readable value
                             let displayValue = arg.value;
                             if (arg.values && arg.values.length > 1) {
-                                // 如果有十进制表示，优先使用
+                                // Prefer decimal representation if available
                                 const decValue = arg.values.find(v => !v.startsWith('0x') && v !== arg.value && !isNaN(v));
                                 if (decValue && parseInt(decValue) < 1000000) {
                                     displayValue = `${arg.value} (${decValue})`;
@@ -1901,7 +2051,7 @@
                             }
                             fullPath = fullPath.replace(placeholder, displayValue);
 
-                            // 最后一个参数通常是值
+                            // The last argument is usually the value
                             if (index === node.message.arguments.length - 1) {
                                 stateValue = displayValue;
                             }
@@ -1911,14 +2061,14 @@
                     }
                 });
 
-                // 解析路径和值
+                // Parse path and value
                 const parsed = parseStatePath(fullPath, stateValue);
                 if (parsed.path && parsed.value !== null) {
                     state[parsed.path] = parsed.value;
                 }
             }
 
-            // 递归处理子节点
+            // Recursively process child nodes
             if (node.childrenList) {
                 node.childrenList.forEach(child => {
                     extractStateRecursively(child, state);
@@ -1926,7 +2076,7 @@
             }
         }
 
-        // 解析状态路径
+        // Parse state path
         function parseStatePath(fullText, extractedValue) {
             const colonIndex = fullText.indexOf(': ');
             if (colonIndex === -1) {
@@ -1936,22 +2086,22 @@
             const path = fullText.substring(0, colonIndex).trim();
             let value = fullText.substring(colonIndex + 2).trim();
 
-            // 如果有从arguments中提取的值，优先使用
+            // Prefer value extracted from arguments when present
             if (extractedValue && extractedValue !== 'undefined') {
                 value = extractedValue;
             }
 
-            // 清理引号
+            // Trim quotes
             value = value.replace(/^['"]|['"]$/g, '');
 
             return { path, value };
         }
 
-        // 渲染Global State差异
+        // Render Global State diff
         function renderGlobalStateDiff(diff) {
             let md = '';
 
-            // 按路径类型分组
+            // Group by path type
             const groups = {
                 'storage': { title: 'Storage Changes', items: [] },
                 'balance': { title: 'Balance Changes', items: [] },
@@ -1973,7 +2123,7 @@
                 }
             });
 
-            // 渲染各组
+            // Render each group
             Object.values(groups).forEach(group => {
                 if (group.items.length > 0) {
                     md += `### ${group.title}\n\n`;
@@ -1992,18 +2142,18 @@
             return md;
         }
 
-        // 从variables数组中渲染层次结构 - 参考项目版本
+        // Render hierarchy from variables array - reference implementation
         function renderVariablesFromArray(variables) {
             let md = '';
 
             variables.forEach((variable, index) => {
-                // 只处理有variableName字段的对象
+                // Only process objects with variableName field
                 if (variable && typeof variable === 'object' && variable.hasOwnProperty('variableName')) {
-                    // 处理有childrenList的变量
+                    // Handle variables with childrenList
                     if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
                         md += renderNestedVariable(variable);
                     } else {
-                        // 简单变量，直接输出变量名和值
+                        // Simple variable: output name and value
                         const name = variable.variableName;
                         const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
                         md += `**${name}**: \`${value}\`\n\n`;
@@ -2014,21 +2164,21 @@
             return md;
         }
 
-        // 处理嵌套变量 - 参考项目版本
+        // Handle nested variables - reference implementation
         function renderNestedVariable(variable, parentPath = []) {
             let md = '';
             const currentPath = parentPath.length > 0 ? [...parentPath, variable.variableName] : [variable.variableName];
 
-            // 如果有子变量，递归处理
+            // If there are child variables, recurse
             if (variable.hasOwnProperty('childrenList') && Array.isArray(variable.childrenList) && variable.childrenList.length > 0) {
                 variable.childrenList.forEach(child => {
-                    // 确保child是有效的对象且有variableName
+                    // Ensure child is a valid object with variableName
                     if (child && typeof child === 'object' && child.hasOwnProperty('variableName')) {
                         md += renderNestedVariable(child, currentPath);
                     }
                 });
             } else {
-                // 叶节点，输出完整路径和值
+                // Leaf node: output full path and value
                 const fullPath = currentPath.join('.');
                 const value = variable.hasOwnProperty('value') ? variable.value : 'undefined';
                 md += `**${fullPath}**: \`${value}\`\n\n`;
@@ -2037,32 +2187,32 @@
             return md;
         }
 
-        // 启动提示
+        // Startup tip
         window.addEventListener('DOMContentLoaded', () => {
-            showStatus('请先运行服务器: cd /Users/pixelpanda/certora-scraper && node scripts/certora_auto_server.mjs', 'info');
+            showStatus('Please run server first: cd /Users/pixelpanda/certora-scraper && node scripts/certora_auto_server.mjs', 'info');
         });
 
-        // 点击modal外部关闭
-        // 复制功能
+        // Close modal by clicking outside
+        // Copy helpers
         function showCopyNotification(message) {
-            // 移除现有的通知
+            // Remove existing notification
             const existingNotification = document.querySelector('.copy-notification');
             if (existingNotification) {
                 existingNotification.remove();
             }
 
-            // 创建新通知
+            // Create new notification
             const notification = document.createElement('div');
             notification.className = 'copy-notification';
             notification.textContent = message;
             document.body.appendChild(notification);
 
-            // 显示动画
+            // Animate in
             setTimeout(() => {
                 notification.classList.add('show');
             }, 10);
 
-            // 2秒后隐藏并删除
+            // Hide after 2 seconds
             setTimeout(() => {
                 notification.classList.remove('show');
                 setTimeout(() => {
@@ -2078,7 +2228,7 @@
                 await navigator.clipboard.writeText(text);
                 return true;
             } catch (err) {
-                // 回退方法
+                // Fallback method
                 const textArea = document.createElement('textarea');
                 textArea.value = text;
                 document.body.appendChild(textArea);
@@ -2100,28 +2250,28 @@
             if (rule && rule.markdown) {
                 copyToClipboard(rule.markdown).then(success => {
                     if (success) {
-                        showCopyNotification('✅ Markdown已复制到剪贴板');
+                        showCopyNotification('✅ Markdown copied to clipboard');
                     } else {
-                        showCopyNotification('❌ 复制失败');
+                        showCopyNotification('❌ Copy failed');
                     }
                 });
             } else {
-                showCopyNotification('❌ 没有可复制的Markdown内容');
+                showCopyNotification('❌ No Markdown content to copy');
             }
         }
 
         function copyCodexAnalysis(outputFile) {
             const textarea = document.getElementById(`analysis-${outputFile}`);
-            if (textarea && textarea.value && textarea.value.trim() !== '' && !textarea.value.includes('分析中...')) {
+            if (textarea && textarea.value && textarea.value.trim() !== '' && !textarea.value.includes('Analyzing...')) {
                 copyToClipboard(textarea.value).then(success => {
                     if (success) {
-                        showCopyNotification('✅ Codex分析已复制到剪贴板');
+                        showCopyNotification('✅ Codex analysis copied to clipboard');
                     } else {
-                        showCopyNotification('❌ 复制失败');
+                        showCopyNotification('❌ Copy failed');
                     }
                 });
             } else {
-                showCopyNotification('❌ 没有可复制的分析结果');
+                showCopyNotification('❌ No analysis content to copy');
             }
         }
 
