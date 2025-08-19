@@ -577,7 +577,7 @@ ${content}`;
             // Flush any remaining buffered output
             if (bufferTimer) clearTimeout(bufferTimer);
             flushBuffer();
-            
+
             console.log(`Codex process ended, exit code: ${code}`);
             if (code === 0 && !hasError) {
                 // Extract final analysis and output only at the end
@@ -745,7 +745,7 @@ app.post('/fix-sequential-stream', async (req, res) => {
             }
             args.push(String(promptText || '').replace(/\0/g, ''));
 
-            send(`Starting Codex fix: ${ruleName}`, 'info');
+            send(`Fixing: ${ruleName}`, 'info');
             // Avoid detached to keep process tied to request lifecycle (prevents early SSE end)
             currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
 

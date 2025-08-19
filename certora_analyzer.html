@@ -986,7 +986,7 @@
             document.getElementById('result-section').style.display = 'block';
         }
 
-            // Preview area is editable directly; no modal/switch needed
+        // Preview area is editable directly; no modal/switch needed
 
         function formatRuleName(name) {
             const parts = name.split(' > ');
@@ -1512,8 +1512,8 @@
             ).trim();
 
             if (!prompt) {
-            showFixStatus('Please enter fix prompt', 'error');
-            return;
+                showFixStatus('Please enter fix prompt', 'error');
+                return;
             }
 
             // Close preview modal
@@ -1750,19 +1750,19 @@
 
             const summaryHtml = `
                 <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #dee2e6;">
-                    <div style="font-weight: 600; margin-bottom: 8px; color: #495057;">🎯 修复进度总览</div>
+                    <div style="font-weight: 600; margin-bottom: 8px; color: #495057;">🎯 Fix Progress Overview</div>
                     <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-                        <span style="color: #28a745;">✅ 已完成: <strong>${completedItems}</strong></span>
-                        <span style="color: #ffc107;">⚙️ 进行中: <strong>${inProgressItems}</strong></span>
-                        <span style="color: #dc3545;">❌ 失败: <strong>${failedItems}</strong></span>
-                        <span style="color: #6c757d;">⏳ 待处理: <strong>${pendingItems}</strong></span>
+                        <span style="color: #28a745;">✅ Completed: <strong>${completedItems}</strong></span>
+                        <span style="color: #ffc107;">⚙️ In Progress: <strong>${inProgressItems}</strong></span>
+                        <span style="color: #dc3545;">❌ Failed: <strong>${failedItems}</strong></span>
+                        <span style="color: #6c757d;">⏳ Pending: <strong>${pendingItems}</strong></span>
                     </div>
                     <div style="margin-top: 8px;">
                         <div style="background: #e9ecef; height: 8px; border-radius: 4px; overflow: hidden;">
                             <div style="background: linear-gradient(90deg, #28a745 0%, #20c997 100%); height: 100%; width: ${(completedItems / totalItems) * 100}%; transition: width 0.5s ease;"></div>
                         </div>
                         <div style="text-align: center; margin-top: 4px; font-size: 0.9em; color: #6c757d;">
-                            ${completedItems} / ${totalItems} 项任务完成 (${Math.round((completedItems / totalItems) * 100)}%)
+                            ${completedItems} / ${totalItems} tasks completed (${Math.round((completedItems / totalItems) * 100)}%)
                         </div>
                     </div>
                 </div>
