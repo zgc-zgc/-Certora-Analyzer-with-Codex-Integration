@@ -16,6 +16,9 @@ let currentChild = null;
 let globalFixAbort = false;
 // Whether a sequential fix is currently running
 let activeFixRunning = false;
+// Resume mechanism: track current item being processed
+let currentFixIndex = 0;
+let resumeState = null;
 
 // Process Codex output, extract only the final answer
 function extractCodexAnswer(fullOutput) {
@@ -440,6 +443,30 @@ app.post('/analyze-rule-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
     };
 
+    // Process codex output with timestamp formatting
+    const processCodexOutput = (rawOutput) => {
+        // Split by timestamp pattern [YYYY-MM-DDTHH:MM:SS]
+        const timestampPattern = /\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]/g;
+        const lines = rawOutput.split('\n');
+        let processedOutput = '';
+
+        for (let line of lines) {
+            // Check if line starts with timestamp
+            const timestampMatch = line.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\](.*)$/);
+            if (timestampMatch) {
+                const timestamp = timestampMatch[1];
+                const content = timestampMatch[2];
+                // Format with clear timestamp separation - use ► to distinguish
+                processedOutput += `► [${timestamp}]${content}\n`;
+            } else {
+                // Regular line without timestamp
+                processedOutput += line + '\n';
+            }
+        }
+
+        return processedOutput;
+    };
+
     try {
         const { spawn } = await import('child_process');
         let promptText;
@@ -531,10 +558,11 @@ ${content}`;
         let outputBuffer = '';
         let bufferTimer = null;
 
-        // Function to flush buffered output
+        // Function to flush buffered output with timestamp processing
         const flushBuffer = () => {
             if (outputBuffer) {
-                sendProgress(outputBuffer, 'output');
+                const processedOutput = processCodexOutput(outputBuffer);
+                sendProgress(processedOutput, 'output');
                 outputBuffer = '';
             }
             bufferTimer = null;
@@ -613,7 +641,7 @@ app.post('/generate-fix-prompt', async (req, res) => {
         });
     }
 
-    console.log(`Generating fix prompt, ${analyses.length} analysis results`);
+    // Removed 'Generating fix prompt' log since we now do individual fixes
 
     try {
         // Normalize input: support string array or object array { text, ruleName }
@@ -650,16 +678,9 @@ ${item.text}
 - You MAY ONLY modify CVL specification files (.spec) , Certora configuration files (.conf) , HARNESS CONTRACTS (.sol) in the following directories: certora/harness when necessary.
 - DO NOT RUN certoraRun command yourself
 
-For each item:
-- Apply minimal, targeted changes.
-- If edits are needed, output exact file edits; otherwise, explain briefly.
-- Do not run certoraRun yourself.
-- Do not edit Solidity in the following directories: src/, contract/, contracts/.
+You have the ability to search the web to get any necessary information. 
 
-You have the ability to search the web to get any necessary information.
-
-Work items:
-${formattedAnalyses.join('\\n\\n')} `;
+Implement fixes based on the following analysis result`;
 
         res.json({
             success: true,
@@ -675,9 +696,50 @@ ${formattedAnalyses.join('\\n\\n')} `;
     }
 });
 
-// New: sequential fix + certoraRun loop
-app.post('/fix-sequential-stream', async (req, res) => {
-    const { basePrompt, analyses, projectPath, confPath } = req.body || {};
+// New: resume fix from specific index
+app.post('/resume-fix-from', async (req, res) => {
+    const { startIndex, basePrompt, analyses, projectPath, confPath } = req.body || {};
+
+    if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
+        return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+            success: false,
+            error: 'Missing analysis results (analyses)'
+        }));
+    }
+
+    const startIdx = parseInt(startIndex) || 0;
+    if (startIdx < 0 || startIdx >= analyses.length) {
+        return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+            success: false,
+            error: `Invalid startIndex: ${startIdx}, should be 0-${analyses.length - 1}`
+        }));
+    }
+
+    // Reuse the existing fix-sequential-stream logic with modified analyses array
+    const remainingAnalyses = analyses.slice(startIdx);
+
+    // Forward to existing fix-sequential-stream endpoint with modified data
+    const modifiedReq = {
+        ...req,
+        body: {
+            basePrompt,
+            analyses: remainingAnalyses,
+            projectPath,
+            confPath,
+            _resumeInfo: {
+                originalStartIndex: startIdx,
+                totalItems: analyses.length
+            }
+        }
+    };
+
+    // Call the existing fix-sequential-stream handler
+    return handleSequentialFix(modifiedReq, res);
+});
+
+// Extract the main logic to a reusable function
+function handleSequentialFix(req, res) {
+    const { basePrompt, analyses, projectPath, confPath, _resumeInfo } = req.body || {};
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
@@ -706,6 +768,17 @@ app.post('/fix-sequential-stream', async (req, res) => {
     let clientDisconnected = false; // client disconnects but do not abort fix flow
     currentChild = null;
     activeFixRunning = true;
+
+    // Set current fix index for tracking
+    currentFixIndex = _resumeInfo ? _resumeInfo.originalStartIndex : 0;
+    resumeState = {
+        basePrompt,
+        analyses: req.body.analyses, // Original full analyses array
+        projectPath,
+        confPath,
+        currentIndex: currentFixIndex
+    };
+
     const killCurrent = () => {
         try {
             if (currentChild && currentChild.pid) {
@@ -739,13 +812,32 @@ app.post('/fix-sequential-stream', async (req, res) => {
                 '-c', 'model_reasoning_effort=high',
                 '-c', 'model_reasoning_summary=detailed'
             ];
-            if (projectPath && String(projectPath).trim()) {
-                args.push('-C', String(projectPath).trim());
-                send(`Set working directory: ${String(projectPath).trim()}`, 'info');
-            }
-            args.push(String(promptText || '').replace(/\0/g, ''));
 
-            send(`Fixing: ${ruleName}`, 'info');
+            let workingDirectory = null;
+            let projectRootPath = null;
+
+            if (projectPath && String(projectPath).trim()) {
+                projectRootPath = String(projectPath).trim();
+                workingDirectory = `${projectRootPath}/certora`;
+
+                args.push('-C', workingDirectory);
+                // Removed 'Set working directory' log - not needed in fix stage
+                send(`Project root directory: ${projectRootPath}`, 'info');
+            }
+
+            // Add project context to prompt
+            const contextualPrompt = projectRootPath
+                ? `Project Root Directory: ${projectRootPath}
+
+You can read files from the project root directory and its subdirectories for analysis.
+You can only write/modify files in the current working directory (certora/) and its subdirectories.
+
+${String(promptText || '').replace(/\0/g, '')}`
+                : String(promptText || '').replace(/\0/g, '');
+
+            args.push(contextualPrompt);
+
+            // Removed redundant 'Fixing:' log message
             // Avoid detached to keep process tied to request lifecycle (prevents early SSE end)
             currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
 
@@ -805,102 +897,129 @@ app.post('/fix-sequential-stream', async (req, res) => {
         });
     };
 
-    try {
-        send(`Starting sequential fix, ${analyses.length} items total`, 'info');
+    // Execute the main logic
+    (async () => {
+        try {
+            const startIdx = _resumeInfo ? _resumeInfo.originalStartIndex : 0;
+            const totalItems = _resumeInfo ? _resumeInfo.totalItems : analyses.length;
 
-        // Normalize input
-        const items = analyses.map((a, i) => {
-            if (a && typeof a === 'object') {
-                const text = a.text ?? a.analysis ?? '';
-                const ruleName = a.ruleName ?? a.name ?? a.rule ?? `Item ${i + 1}`;
-                return { text: String(text || ''), ruleName: String(ruleName || `Item ${i + 1}`) };
-            }
-            return { text: String(a || ''), ruleName: `Item ${i + 1}` };
-        });
+            send(`Starting sequential fix, ${analyses.length} items total (${startIdx > 0 ? `resuming from ${startIdx + 1}` : 'from beginning'})`, 'info');
 
-        // Debug: log each item's rule name
-        send(`📋 List of items to fix:`, 'info');
-        items.forEach((item, index) => {
-            send(`  ${index + 1}. ${item.ruleName}`, 'info');
-        });
+            // Normalize input
+            const items = analyses.map((a, i) => {
+                if (a && typeof a === 'object') {
+                    const text = a.text ?? a.analysis ?? '';
+                    const ruleName = a.ruleName ?? a.name ?? a.rule ?? `Item ${startIdx + i + 1}`;
+                    const content = a.content ?? a.ruleData ?? null; // Preserve JSON content
+                    return {
+                        text: String(text || ''),
+                        ruleName: String(ruleName || `Item ${startIdx + i + 1}`),
+                        content: content
+                    };
+                }
+                return {
+                    text: String(a || ''),
+                    ruleName: `Item ${startIdx + i + 1}`,
+                    content: null
+                };
+            });
 
-        // Fix items sequentially
-        for (let i = 0; i < items.length; i++) {
-            if (globalFixAbort) {
-                send(`⚠️ Abort signal detected, stopping fix`, 'info');
-                break;
-            }
-            const item = items[i];
-            // Cleaner section headers
-            send(`➡️ Start ${i + 1}/${items.length}: ${item.ruleName}`, 'info');
-            send(`
-===== [Start ${i + 1}/${items.length}] ${item.ruleName} =====\n`, 'output');
+            // Debug: log each item's rule name
+            send(`📋 List of items to fix:`, 'info');
+            items.forEach((item, index) => {
+                send(`  ${startIdx + index + 1}. ${item.ruleName}`, 'info');
+            });
 
-            const perPrompt = `${String(basePrompt || '')}
-Rule: ${item.ruleName}
-Details:
-${item.text}`;
-
-            send(`🔧 Invoking Codex to fix item ${i + 1}...`, 'info');
-            const ok = await spawnCodexOnce(perPrompt, item.ruleName);
-            send(`📋 Result ${i + 1}: ${ok ? 'Success' : 'Failure'}`, 'info');
-            send(`===== [Done  ${i + 1}/${items.length}] ${ok ? 'Success' : 'Failure'} =====\n`, 'output');
-
-            if (!ok) {
+            // Fix items sequentially
+            for (let i = 0; i < items.length; i++) {
                 if (globalFixAbort) {
-                    send(`⚠️ Abort signal detected during fix`, 'info');
+                    send(`⚠️ Abort signal detected, stopping fix`, 'info');
                     break;
                 }
-                send(`❌ Fix ${i + 1} failed, continue to next`, 'error');
-                // continue to next item
-            } else {
-                send(`✅ Fix ${i + 1} completed`, 'success');
-            }
-            if (i + 1 < items.length) {
-                send(`⏭️ Next ${i + 2}/${items.length}`, 'info');
-                send(`⏭️ Next ${i + 2}/${items.length}\n`, 'output');
-            }
-            // Reduced noisy loop-state logs to keep UI clean
-        }
+                const item = items[i];
+                const actualIndex = startIdx + i + 1;
+                currentFixIndex = startIdx + i;
+                resumeState.currentIndex = currentFixIndex;
 
-        send(`🏁 Fix loop finished, processed ${items.length} items`, 'info');
-        send(`🏁 Fix loop finished, processed ${items.length} items\n`, 'output');
+                // Cleaner section headers
+                send(`➡️ Start ${actualIndex}/${totalItems}: ${item.ruleName}`, 'info');
+                send(`\n===== [Start ${actualIndex}/${totalItems}] ${item.ruleName} =====\n`, 'output');
 
-        if (globalFixAbort) {
-            send('Sequential fix aborted by user', 'status');
-            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
-            activeFixRunning = false;
-            return res.end();
-        }
-
-        // After fixes, run certoraRun (if confPath provided)
-        if (confPath && String(confPath).trim()) {
-            send('✅ All fixes completed, running certoraRun for syntax check...', 'info');
-            send('✅ Running certoraRun for syntax check...\n', 'output');
-
-            let attempt = 0;
-            // Retry until success or aborted; only auto-fix syntax-class errors
-            while (!globalFixAbort) {
-                attempt++;
-                send(`🔄 certoraRun attempt ${attempt}`, 'info');
-                send(`🔄 certoraRun attempt ${attempt}\n`, 'output');
-
-                const result = await runCertora();
-
-                if (result.success) {
-                    send('✅ certoraRun succeeded! Verification URL obtained', 'success');
-                    break;
+                // Generate single-item prompt with rule JSON data if available
+                // Use existing converted markdown data from your json->md conversion
+                let ruleDataMarkdown = '';
+                if (item.content && typeof item.content === 'string') {
+                    // If content is already converted markdown string, use it directly
+                    ruleDataMarkdown = `\n\n## Call Trace Data\n${item.content}`;
+                } else if (item.ruleData && typeof item.ruleData === 'string') {
+                    // Handle alternative rule data field
+                    ruleDataMarkdown = `\n\n## Call Trace Data\n${item.ruleData}`;
                 }
 
-                // Analyze error type
-                const lower = result.output.toLowerCase();
-                const hasSyntaxError = lower.includes('syntax error') || lower.includes('parse error') || lower.includes('compilation error');
+                // Wrap codex analysis in code blocks
+                const analysisInCodeBlock = `\`\`\`\n${item.text}\n\`\`\``;
 
-                if (hasSyntaxError) {
-                    send('❌ certoraRun detected syntax errors; sending to Codex to fix...', 'error');
-                    send('❌ certoraRun syntax errors; delegating to Codex\n', 'output');
+                const perPrompt = `${String(basePrompt || '')}\n\n\nAnalysis Results:\n${analysisInCodeBlock}${ruleDataMarkdown}`;
 
-                    const failurePrompt = `Resolve SPEC/CONF/HARNESS CONTRACTS  syntax/parse/compilation errors shown in the log tail by making the minimal edits required.
+                const ok = await spawnCodexOnce(perPrompt, item.ruleName);
+                send(`📋 Result ${actualIndex}: ${ok ? 'Success' : 'Failure'}`, 'info');
+                send(`===== [Done  ${actualIndex}/${totalItems}] ${ok ? 'Success' : 'Failure'} =====\n`, 'output');
+
+                if (!ok) {
+                    if (globalFixAbort) {
+                        send(`⚠️ Abort signal detected during fix`, 'info');
+                        break;
+                    }
+                    send(`❌ Fix ${actualIndex} failed, continue to next`, 'error');
+                    // continue to next item
+                } else {
+                    send(`✅ Fix ${actualIndex} completed`, 'success');
+                }
+                if (i + 1 < items.length) {
+                    send(`⏭️ Next ${startIdx + i + 2}/${totalItems}`, 'info');
+                    send(`⏭️ Next ${startIdx + i + 2}/${totalItems}\n`, 'output');
+                }
+            }
+
+            send(`🏁 Fix loop finished, processed ${items.length} items`, 'info');
+            send(`🏁 Fix loop finished, processed ${items.length} items\n`, 'output');
+
+            if (globalFixAbort) {
+                send('Sequential fix aborted by user', 'status');
+                res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+                activeFixRunning = false;
+                return res.end();
+            }
+
+            // After fixes, run certoraRun (if confPath provided)
+            if (confPath && String(confPath).trim()) {
+                send('✅ All fixes completed, running certoraRun for syntax check...', 'info');
+                send('✅ Running certoraRun for syntax check...\n', 'output');
+
+                let attempt = 0;
+                // Retry until success or aborted; only auto-fix syntax-class errors
+                while (!globalFixAbort) {
+                    attempt++;
+                    send(`🔄 certoraRun attempt ${attempt}`, 'info');
+                    send(`🔄 certoraRun attempt ${attempt}\n`, 'output');
+
+                    const result = await runCertora();
+
+                    if (result.success) {
+                        send('✅ certoraRun succeeded! Verification URL obtained', 'success');
+                        break;
+                    }
+
+                    // Analyze error type
+                    const lower = result.output.toLowerCase();
+                    const hasSyntaxError = lower.includes('syntax error') || lower.includes('parse error') || lower.includes('compilation error');
+
+                    if (hasSyntaxError) {
+                        send('❌ certoraRun detected syntax errors; sending to Codex to fix...', 'error');
+                        send(`\n===== [Start Syntax Fix] Attempt ${attempt} =====\n`, 'output');
+                        send('🔧 Invoking Codex to fix syntax errors...', 'info');
+
+                        const failurePrompt = `Resolve SPEC/CONF/HARNESS CONTRACTS  syntax/parse/compilation errors shown in the log tail by making the minimal edits required.
 
  Constraints:
 - NEVER MODIFY any Solidity files (.sol) in the following directories: src/, contract/, contracts/.
@@ -913,44 +1032,44 @@ Error log tail:
 ${result.output.slice(-9000)}
 `;
 
-                    const fixOk = await spawnCodexOnce(failurePrompt, 'Syntax Error Fix');
-                    if (!fixOk) {
-                        if (globalFixAbort) break;
-                        // Continue loop: try certoraRun again (until abort or success)
-                        send('❌ Codex failed to fix syntax errors; will retry certoraRun', 'error');
-                        send('❌ Codex failed to fix syntax errors; will retry certoraRun\n', 'output');
-                    } else {
-                        send('✅ Codex attempted to fix syntax errors', 'success');
-                        send('✅ Codex attempted to fix syntax errors\n', 'output');
+                        const fixOk = await spawnCodexOnce(failurePrompt, 'Syntax Error Fix');
+                        if (!fixOk) {
+                            if (globalFixAbort) break;
+                            // Continue loop: try certoraRun again (until abort or success)
+                            send('❌ Codex failed to fix syntax errors; will retry certoraRun', 'error');
+                            send(`===== [Done  Syntax Fix] Attempt ${attempt} - Failure =====\n`, 'output');
+                        } else {
+                            send('✅ Codex attempted to fix syntax errors', 'success');
+                            send(`===== [Done  Syntax Fix] Attempt ${attempt} - Success =====\n`, 'output');
+                        }
+                        // Continue loop, run next certoraRun to verify fix
+                        continue;
                     }
-                    // Continue loop, run next certoraRun to verify fix
-                    continue;
+
+                    // Non-syntax errors: logic, constraints, timeouts; avoid infinite loop
+                    send('⚠️ certoraRun failed (non-syntax). See logs for details', 'error');
+                    send(result.output.slice(-2000), 'output');
+                    break;
                 }
-
-                // Non-syntax errors: logic, constraints, timeouts; avoid infinite loop
-                send('⚠️ certoraRun failed (non-syntax). See logs for details', 'error');
-                send(result.output.slice(-2000), 'output');
-                break;
+            } else {
+                send('⚠️ No conf path provided; skipping certoraRun', 'info');
+                send('⚠️ No conf path provided; skipping certoraRun\n', 'output');
             }
-        } else {
-            send('⚠️ No conf path provided; skipping certoraRun', 'info');
-            send('⚠️ No conf path provided; skipping certoraRun\n', 'output');
+
+            send('Sequential fix flow completed', 'success');
+            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            activeFixRunning = false;
+            res.end();
+
+        } catch (e) {
+            send(`Sequential fix error: ${e.message}`, 'error');
+            if (e && e.stack) send(e.stack, 'output');
+            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            activeFixRunning = false;
+            res.end();
         }
-
-        send('Sequential fix flow completed', 'success');
-        res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
-        activeFixRunning = false;
-        res.end();
-
-    } catch (e) {
-        send(`Sequential fix error: ${e.message}`, 'error');
-        if (e && e.stack) send(e.stack, 'output');
-        res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
-        activeFixRunning = false;
-        res.end();
-    }
-});
-
+    })();
+}
 
 // New: endpoint to terminate all Codex processes
 app.post('/kill-processes', async (req, res) => {
@@ -1035,4 +1154,24 @@ app.get('/list-conf', async (req, res) => {
     } catch (e) {
         return res.status(500).json({ success: false, error: e.message });
     }
+});
+
+// New: sequential fix + certoraRun loop
+app.post('/fix-sequential-stream', async (req, res) => {
+    return handleSequentialFix(req, res);
+});
+
+// New: get current resume state
+app.get('/resume-state', async (req, res) => {
+    res.json({
+        success: true,
+        activeFixRunning,
+        currentIndex: currentFixIndex,
+        resumeState: resumeState ? {
+            totalItems: resumeState.analyses ? resumeState.analyses.length : 0,
+            currentIndex: resumeState.currentIndex,
+            projectPath: resumeState.projectPath,
+            confPath: resumeState.confPath
+        } : null
+    });
 });

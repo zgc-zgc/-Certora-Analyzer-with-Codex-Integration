@@ -655,7 +655,7 @@
                      word-break: break-word; max-height: 500px; overflow-y: auto; min-height: 200px; margin-bottom: 15px;"></div>
                 <div id="main-verification-url" style="margin-top: 15px; padding: 15px; background: #d4edda; 
                      border-radius: 8px; display: none;">
-                    <strong>🎉 Verification complete!</strong><br>
+                    <strong>🎉 Verification submitted!</strong><br>
                     View verification results: <a id="main-verification-link" href="#" target="_blank"
                         style="color: #155724; font-weight: 600;"></a>
                 </div>
@@ -667,7 +667,7 @@
                         <tr>
                             <th style="width: 25%;">Rule Name</th>
                             <th style="width: 10%;">Status</th>
-                            <th style="width: 10%;">Markdown</th>
+                            <th style="width: 10%;">Data</th>
                             <th style="width: 40%;">Codex Analysis Result</th>
                             <th style="width: 15%;">Actions</th>
                         </tr>
@@ -949,7 +949,7 @@
                                 📄 View
                             </button>
                             <button class="copy-btn" onclick="copyMarkdown(${index})">
-                                📋 Copy MD
+                                📋 Copy
                             </button>
                         </div>
                     </td>
@@ -1750,7 +1750,6 @@
 
             const summaryHtml = `
                 <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #dee2e6;">
-                    <div style="font-weight: 600; margin-bottom: 8px; color: #495057;">🎯 Fix Progress Overview</div>
                     <div style="display: flex; gap: 16px; flex-wrap: wrap;">
                         <span style="color: #28a745;">✅ Completed: <strong>${completedItems}</strong></span>
                         <span style="color: #ffc107;">⚙️ In Progress: <strong>${inProgressItems}</strong></span>
