@@ -1201,11 +1201,19 @@
                     break;
 
                 case 'output':
-                    // Show system header once (server sends this section only)
-                    if (data.message && data.message.trim()) {
-                        context.fullThinkingProcess = data.message.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
-                        textarea.value = context.fullThinkingProcess;
-                        textarea.scrollTop = textarea.scrollHeight;
+                    // Append output content more efficiently
+                    if (data.message) {
+                        context.fullThinkingProcess += data.message;
+                        // Use insertAdjacentText for better performance
+                        const currentPos = textarea.selectionStart;
+                        const currentEnd = textarea.selectionEnd;
+                        textarea.value += data.message;
+                        // Restore cursor position to avoid jumping
+                        textarea.setSelectionRange(currentPos, currentEnd);
+                        // Defer scrolling to avoid blocking
+                        requestAnimationFrame(() => {
+                            textarea.scrollTop = textarea.scrollHeight;
+                        });
                     }
                     break;
 
@@ -1224,7 +1232,7 @@
                         const extracted = extractCodexAnswer(context.fullThinkingProcess);
                         finalContent = extracted ? extracted.trim() : context.fullThinkingProcess.trim();
                     }
-                    // Show only the final result (system header shown at start only)
+                    // Show only the final result
                     textarea.value = finalContent;
                     // Preview is editable by default
                     console.log(`Streaming analysis success: ${outputFile}`);
