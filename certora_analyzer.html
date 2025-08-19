@@ -1372,7 +1372,17 @@
                 if (/Click Analyze/.test(val)) return;
 
                 const ruleName = ta.dataset.ruleName || '';
-                analyses.push({ text: val, ruleName });
+                const outputFile = ta.id.replace('analysis-', '');
+                
+                // Find the corresponding rule to get the original markdown (CERTORA_OUTPUT)
+                const rule = processedRules.find(r => r.outputFile === outputFile);
+                const originalContent = rule ? rule.markdown : '';
+                
+                analyses.push({ 
+                    text: val, 
+                    ruleName,
+                    content: originalContent  // Add original CERTORA_OUTPUT
+                });
             });
 
             if (analyses.length === 0) {

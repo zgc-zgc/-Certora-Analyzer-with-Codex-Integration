@@ -698,7 +698,7 @@ Implement fixes based on the following analysis result`;
 
 // New: resume fix from specific index
 app.post('/resume-fix-from', async (req, res) => {
-    const { startIndex, basePrompt, analyses, projectPath, confPath } = req.body || {};
+    const { content, startIndex, basePrompt, analyses, projectPath, confPath } = req.body || {};
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
@@ -722,6 +722,7 @@ app.post('/resume-fix-from', async (req, res) => {
     const modifiedReq = {
         ...req,
         body: {
+            content,
             basePrompt,
             analyses: remainingAnalyses,
             projectPath,
@@ -739,7 +740,7 @@ app.post('/resume-fix-from', async (req, res) => {
 
 // Extract the main logic to a reusable function
 function handleSequentialFix(req, res) {
-    const { basePrompt, analyses, projectPath, confPath, _resumeInfo } = req.body || {};
+    const { content, basePrompt, analyses, projectPath, confPath, _resumeInfo } = req.body || {};
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
@@ -772,6 +773,7 @@ function handleSequentialFix(req, res) {
     // Set current fix index for tracking
     currentFixIndex = _resumeInfo ? _resumeInfo.originalStartIndex : 0;
     resumeState = {
+        content,
         basePrompt,
         analyses: req.body.analyses, // Original full analyses array
         projectPath,
@@ -910,17 +912,19 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 if (a && typeof a === 'object') {
                     const text = a.text ?? a.analysis ?? '';
                     const ruleName = a.ruleName ?? a.name ?? a.rule ?? `Item ${startIdx + i + 1}`;
-                    const content = a.content ?? a.ruleData ?? null; // Preserve JSON content
+                    const itemContent = a.content ?? a.ruleData ?? null; // This is the original CERTORA_OUTPUT
                     return {
                         text: String(text || ''),
                         ruleName: String(ruleName || `Item ${startIdx + i + 1}`),
-                        content: content
+                        content: itemContent,  // Keep individual rule's CERTORA_OUTPUT
+                        originalContent: itemContent  // Backup field name
                     };
                 }
                 return {
                     text: String(a || ''),
                     ruleName: `Item ${startIdx + i + 1}`,
-                    content: null
+                    content: null,
+                    originalContent: null
                 };
             });
 
@@ -945,13 +949,29 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 send(`➡️ Start ${actualIndex}/${totalItems}: ${item.ruleName}`, 'info');
                 send(`\n===== [Start ${actualIndex}/${totalItems}] ${item.ruleName} =====\n`, 'output');
 
-                // Generate single-item prompt with rule JSON data if available
-                // Use existing converted markdown data from your json->md conversion
+                // Generate single-item prompt with CERTORA_OUTPUT like analysis phase
+                // Priority: 1. Individual item's content, 2. Global content parameter
+                let certoraOutputSection = '';
+                let usedContent = null;
+                
+                // First try to use individual item's original content (preferred)
+                if (item.content && typeof item.content === 'string' && item.content.trim()) {
+                    usedContent = item.content;
+                } else if (item.originalContent && typeof item.originalContent === 'string' && item.originalContent.trim()) {
+                    usedContent = item.originalContent;
+                } else if (content && content.trim()) {
+                    // Fallback to global content parameter
+                    usedContent = content;
+                }
+                
+                if (usedContent) {
+                    certoraOutputSection = `\n\n\`\`\`\nCERTORA_OUTPUT:\n${usedContent}\n\`\`\``;
+                }
+
+                // Keep existing rule data markdown for backward compatibility
+                // Note: Skip this since item.content is now used for CERTORA_OUTPUT
                 let ruleDataMarkdown = '';
-                if (item.content && typeof item.content === 'string') {
-                    // If content is already converted markdown string, use it directly
-                    ruleDataMarkdown = `\n\n## Call Trace Data\n${item.content}`;
-                } else if (item.ruleData && typeof item.ruleData === 'string') {
+                if (item.ruleData && typeof item.ruleData === 'string') {
                     // Handle alternative rule data field
                     ruleDataMarkdown = `\n\n## Call Trace Data\n${item.ruleData}`;
                 }
@@ -959,7 +979,7 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 // Wrap codex analysis in code blocks
                 const analysisInCodeBlock = `\`\`\`\n${item.text}\n\`\`\``;
 
-                const perPrompt = `${String(basePrompt || '')}\n\n\nAnalysis Results:\n${analysisInCodeBlock}${ruleDataMarkdown}`;
+                const perPrompt = `${String(basePrompt || '')}\n\n\nAnalysis Results:\n${analysisInCodeBlock}${ruleDataMarkdown}${certoraOutputSection}`;
 
                 const ok = await spawnCodexOnce(perPrompt, item.ruleName);
                 send(`📋 Result ${actualIndex}: ${ok ? 'Success' : 'Failure'}`, 'info');
