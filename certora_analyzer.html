@@ -740,7 +740,7 @@
         let allRulesData = null;
         let jsonContents = {};
         let processedRules = [];
-        let sanityAggregated = null;
+        
         let stopAnalysisFlag = false;
         const analysisControllers = new Map(); // Maintain controller per analysis
         let lastFixAnalyses = []; // Cache for sequential fix
@@ -897,41 +897,19 @@
                 });
             });
 
-            // Aggregate SANITY_FAILED rules
-            const sanityFailed = data.rules.filter(r => r.status === 'SANITY_FAILED');
-            if (sanityFailed.length > 0) {
-                sanityAggregated = aggregateSanityFailures(sanityFailed);
+            // Process SANITY_FAILED rules individually (like VIOLATED rules)
+            data.rules.filter(r => r.status === 'SANITY_FAILED').forEach(rule => {
+                const markdown = rule.content ? convertToMarkdown(rule) : '';
                 processedRules.push({
-                    ruleName: 'Summary: Sanity Failed Rules',
-                    status: 'SANITY_FAILED',
+                    ...rule,
                     type: 'SANITY_FAILED',
-                    markdown: sanityAggregated,
-                    displayName: 'Summary: Sanity Failed Rules',
-                    outputFile: 'sanity_aggregated'
+                    markdown: markdown,
+                    displayName: rule.ruleName
                 });
-            }
+            });
 
             displayResults();
             document.getElementById('action-buttons').style.display = 'flex';
-        }
-
-        function aggregateSanityFailures(rules) {
-            const sanityMap = new Map();
-
-            rules.forEach(rule => {
-                const parts = rule.ruleName.split(' > ');
-                const baseRule = parts[0];
-                const funcName = parts[parts.length - 1];
-
-                if (!sanityMap.has(baseRule)) {
-                    sanityMap.set(baseRule, new Set());
-                }
-                sanityMap.get(baseRule).add(funcName);
-            });
-
-            return Array.from(sanityMap.entries()).map(([rule, funcs]) =>
-                `Rule ${rule} sanity failed in the following functions:\n${Array.from(funcs).map(f => `- ${f}`).join('\n')}`
-            ).join('\n\n');
         }
 
         function displayResults() {
