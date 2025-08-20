@@ -1008,7 +1008,7 @@
         }
 
         async function analyzeRule(index, isBatchAnalysis = false, retryCount = 0) {
-            const maxRetries = 3;
+            const maxRetries = 10;
 
             // Only check stopAnalysisFlag during batch analysis
             if (isBatchAnalysis && stopAnalysisFlag) {
@@ -1172,7 +1172,7 @@
                 } else if (error.message === 'Markdown content is empty') {
                     textarea.value = 'Error: no content to analyze';
                 } else {
-                    if (retryCount < maxRetries && !error.name === 'AbortError') {
+                    if (retryCount < maxRetries && error.name !== 'AbortError') {
                         console.log(`Generic error, will retry: ${error.message}`);
                         analysisControllers.delete(outputFile);
                         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1373,13 +1373,13 @@
 
                 const ruleName = ta.dataset.ruleName || '';
                 const outputFile = ta.id.replace('analysis-', '');
-                
+
                 // Find the corresponding rule to get the original markdown (CERTORA_OUTPUT)
                 const rule = processedRules.find(r => r.outputFile === outputFile);
                 const originalContent = rule ? rule.markdown : '';
-                
-                analyses.push({ 
-                    text: val, 
+
+                analyses.push({
+                    text: val,
                     ruleName,
                     content: originalContent  // Add original CERTORA_OUTPUT
                 });
