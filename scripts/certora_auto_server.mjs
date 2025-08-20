@@ -204,11 +204,62 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control'
+        'Access-Control-Allow-Headers': 'Cache-Control',
+        // Hint reverse proxies not to buffer SSE
+        'X-Accel-Buffering': 'no'
     });
 
+    // Low-overhead SSE writer with simple backpressure support
+    // Registered streams (stdout/stderr) will be paused on backpressure and resumed on drain
+    const registeredStreams = new Set();
+    const registerStream = (s) => { if (s && typeof s.pause === 'function' && typeof s.resume === 'function') registeredStreams.add(s); };
+    const pauseAll = () => { for (const s of registeredStreams) { try { s.pause(); } catch { } } };
+    const resumeAll = () => { for (const s of registeredStreams) { try { s.resume(); } catch { } } };
+
+    const writeSSE = (payload) => {
+        const ok = res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        if (!ok) {
+            // Apply backpressure: pause producers until drain
+            pauseAll();
+            res.once('drain', () => {
+                resumeAll();
+            });
+        }
+        return ok;
+    };
+
+    // Throttled sender to avoid event storms
+    const FLUSH_INTERVAL_MS = 300;
+    const FLUSH_CHUNK_BYTES = 12 * 1024; // 12KB
+    const sseBuffers = { info: '', output: '', error: '' };
+    let sseTimer = null;
+    const flushSSE = (force = false) => {
+        if (!force && sseTimer) return; // already scheduled
+        const doFlush = () => {
+            for (const t of Object.keys(sseBuffers)) {
+                if (sseBuffers[t]) {
+                    writeSSE({ type: t, message: sseBuffers[t] });
+                    sseBuffers[t] = '';
+                }
+            }
+            sseTimer = null;
+        };
+        if (force) {
+            doFlush();
+        } else {
+            sseTimer = setTimeout(doFlush, FLUSH_INTERVAL_MS);
+        }
+    };
+
     const sendProgress = (message, type = 'info') => {
-        res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+        if (typeof message !== 'string') message = String(message ?? '');
+        sseBuffers[type] = (sseBuffers[type] || '') + message;
+        // Flush immediately if buffer large, otherwise schedule
+        if (Buffer.byteLength(sseBuffers[type], 'utf8') >= FLUSH_CHUNK_BYTES) {
+            flushSSE(true);
+        } else {
+            flushSSE(false);
+        }
     };
 
     try {
@@ -439,8 +490,56 @@ app.post('/analyze-rule-stream', async (req, res) => {
         'Access-Control-Allow-Headers': 'Cache-Control'
     });
 
-    const sendProgress = (message, type = 'output') => {
-        res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+    // Backpressure-aware SSE helpers (mirrors analyze-and-fetch-stream)
+    const registeredStreams = new Set();
+    const registerStream = (s) => { if (s && typeof s.pause === 'function' && typeof s.resume === 'function') registeredStreams.add(s); };
+    const pauseAll = () => { for (const s of registeredStreams) { try { s.pause(); } catch { } } };
+    const resumeAll = () => { for (const s of registeredStreams) { try { s.resume(); } catch { } } };
+
+    const writeSSE = (payload) => {
+        const ok = res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        if (!ok) {
+            // Apply backpressure: pause producers until drain
+            pauseAll();
+            res.once('drain', () => {
+                resumeAll();
+            });
+        }
+        return ok;
+    };
+
+    // Buffered/throttled SSE sending
+    const FLUSH_INTERVAL_MS = 300;
+    const FLUSH_CHUNK_BYTES = 12 * 1024; // 12KB
+    const sseBuffers = { info: '', output: '', error: '' };
+    let sseTimer = null;
+    const flushSSE = (force = false) => {
+        if (!force && sseTimer) return; // already scheduled
+        const doFlush = () => {
+            for (const t of Object.keys(sseBuffers)) {
+                if (sseBuffers[t]) {
+                    writeSSE({ type: t, message: sseBuffers[t] });
+                    sseBuffers[t] = '';
+                }
+            }
+            sseTimer = null;
+        };
+        if (force) {
+            doFlush();
+        } else {
+            sseTimer = setTimeout(doFlush, FLUSH_INTERVAL_MS);
+        }
+    };
+
+    const sendProgress = (message, type = 'info') => {
+        if (typeof message !== 'string') message = String(message ?? '');
+        sseBuffers[type] = (sseBuffers[type] || '') + message;
+        // Flush immediately if buffer large, otherwise schedule
+        if (Buffer.byteLength(sseBuffers[type], 'utf8') >= FLUSH_CHUNK_BYTES) {
+            flushSSE(true);
+        } else {
+            flushSSE(false);
+        }
     };
 
     // Process codex output with timestamp formatting
@@ -530,6 +629,10 @@ ${content}`;
             detached: true
         });
 
+        // Register streams for backpressure management
+        registerStream(analyzeCodexProcess.stdout);
+        registerStream(analyzeCodexProcess.stderr);
+
         // If client disconnects, terminate the child process
         let analyzeKilled = false;
         const killAnalyzeProc = () => {
@@ -553,7 +656,20 @@ ${content}`;
         req.on('aborted', killAnalyzeProc);
         res.on('close', killAnalyzeProc);
 
-        let fullOutput = '';
+        // Keep only a tail window to avoid end-of-stream heavy parsing on huge logs
+        const MAX_TAIL_BYTES = parseInt(process.env.SSE_TAIL_MAX_BYTES || '2097152'); // 2MB default
+        let tailChunks = [];
+        let tailBytes = 0;
+        const appendTail = (chunk) => {
+            const str = chunk.toString();
+            const size = Buffer.byteLength(str, 'utf8');
+            tailChunks.push(str);
+            tailBytes += size;
+            while (tailBytes > MAX_TAIL_BYTES && tailChunks.length > 1) {
+                const removed = tailChunks.shift();
+                tailBytes -= Buffer.byteLength(removed, 'utf8');
+            }
+        };
         let hasError = false;
         let outputBuffer = '';
         let bufferTimer = null;
@@ -570,21 +686,22 @@ ${content}`;
 
         analyzeCodexProcess.stdout.on('data', (data) => {
             const chunk = data.toString();
-            fullOutput += chunk;
+            appendTail(chunk);
 
             // Buffer output and send in batches for better performance
             outputBuffer += chunk;
             if (bufferTimer) clearTimeout(bufferTimer);
-            // Send buffered data every 100ms or when buffer is large
-            if (outputBuffer.length > 1000) {
+            // Send buffered data every 300ms or when buffer is large (~12KB)
+            if (Buffer.byteLength(outputBuffer, 'utf8') >= FLUSH_CHUNK_BYTES) {
                 flushBuffer();
             } else {
-                bufferTimer = setTimeout(flushBuffer, 100);
+                bufferTimer = setTimeout(flushBuffer, FLUSH_INTERVAL_MS);
             }
         });
 
         analyzeCodexProcess.stderr.on('data', (data) => {
             const errorOutput = data.toString();
+            appendTail(errorOutput);
             sendProgress(errorOutput, 'error');
         });
 
@@ -605,19 +722,25 @@ ${content}`;
             // Flush any remaining buffered output
             if (bufferTimer) clearTimeout(bufferTimer);
             flushBuffer();
+            // Ensure all buffered SSE chunks are flushed before final events
+            flushSSE(true);
 
             console.log(`Codex process ended, exit code: ${code}`);
             if (code === 0 && !hasError) {
                 // Extract final analysis and output only at the end
-                const finalResult = extractCodexAnswer(fullOutput);
-                sendProgress(finalResult, 'final');
-                sendProgress('Analysis complete', 'success');
+                const tailForParse = tailChunks.join('');
+                const finalResult = extractCodexAnswer(tailForParse);
+                // Flush before final message to keep ordering sensible
+                flushSSE(true);
+                writeSSE({ type: 'final', message: finalResult });
+                writeSSE({ type: 'success', message: 'Analysis complete' });
             } else {
                 const errorMsg = `Process exited abnormally, code: ${code}`;
                 console.error('Codex execution error:', errorMsg);
                 sendProgress(errorMsg, 'error');
             }
-            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            flushSSE(true);
+            writeSSE({ type: 'complete' });
             res.end();
         });
 
@@ -755,12 +878,52 @@ function handleSequentialFix(req, res) {
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control'
+        'Access-Control-Allow-Headers': 'Cache-Control',
+        'X-Accel-Buffering': 'no'
     });
+
+    // Backpressure-aware SSE writer
+    const registeredStreams = new Set();
+    const registerStream = (s) => { if (s && typeof s.pause === 'function' && typeof s.resume === 'function') registeredStreams.add(s); };
+    const pauseAll = () => { for (const s of registeredStreams) { try { s.pause(); } catch { } } };
+    const resumeAll = () => { for (const s of registeredStreams) { try { s.resume(); } catch { } } };
+    const writeSSE = (payload) => {
+        try {
+            const ok = res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            if (!ok) {
+                pauseAll();
+                res.once('drain', () => { resumeAll(); });
+            }
+            return ok;
+        } catch { return false; }
+    };
+
+    // Throttled SSE batching to reduce event storms
+    const FLUSH_INTERVAL_MS = 300;
+    const FLUSH_CHUNK_BYTES = 12 * 1024;
+    const sseBuffers = { output: '', error: '', info: '', success: '', url: '' };
+    let sseTimer = null;
+    const flushSSE = (force = false) => {
+        if (!force && sseTimer) return;
+        const doFlush = () => {
+            for (const t of Object.keys(sseBuffers)) {
+                const msg = sseBuffers[t];
+                if (msg) {
+                    writeSSE({ type: t, message: msg });
+                    sseBuffers[t] = '';
+                }
+            }
+            sseTimer = null;
+        };
+        if (force) doFlush(); else sseTimer = setTimeout(doFlush, FLUSH_INTERVAL_MS);
+    };
 
     const send = (message, type = 'output') => {
         try {
-            res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+            if (typeof message !== 'string') message = String(message ?? '');
+            sseBuffers[type] = (sseBuffers[type] || '') + message;
+            if (Buffer.byteLength(sseBuffers[type], 'utf8') >= FLUSH_CHUNK_BYTES) flushSSE(true);
+            else flushSSE(false);
         } catch { }
     };
 
@@ -843,6 +1006,9 @@ ${String(promptText || '').replace(/\0/g, '')}`
             // Avoid detached to keep process tied to request lifecycle (prevents early SSE end)
             currentChild = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
 
+            registerStream(currentChild.stdout);
+            registerStream(currentChild.stderr);
+
             currentChild.stdout.on('data', (d) => send(d.toString(), 'output'));
             currentChild.stderr.on('data', (d) => send(d.toString(), 'error'));
             currentChild.on('error', (e) => {
@@ -875,25 +1041,55 @@ ${String(promptText || '').replace(/\0/g, '')}`
             send(`Running: certoraRun ${args.join(' ')}`, 'info');
             // Do not use detached, keep same lifecycle as request
             currentChild = spawn(cmd, args, spawnOpts);
-            let out = '';
-            let err = '';
-            currentChild.stdout.on('data', (d) => { const s = d.toString(); out += s; send(s, 'output'); });
-            currentChild.stderr.on('data', (d) => { const s = d.toString(); err += s; send(s, 'output'); });
+            registerStream(currentChild.stdout);
+            registerStream(currentChild.stderr);
+
+            // Keep only a tail in memory but still stream full output to client
+            const TAIL_MAX = 16 * 1024; // 16KB tail for error analysis
+            let tail = '';
+            let foundUrl = '';
+
+            const updateTail = (s) => {
+                tail += s;
+                const excess = Buffer.byteLength(tail, 'utf8') - TAIL_MAX;
+                if (excess > 0) {
+                    // Trim from the start as bytes approximated by characters
+                    tail = tail.slice(excess);
+                }
+            };
+            const scanUrl = (s) => {
+                if (foundUrl) return;
+                const m = s.match(/https:\/\/prover\.certora\.com\/output\/[^\s]+/g);
+                if (m && m.length) foundUrl = m[m.length - 1];
+            };
+
+            currentChild.stdout.on('data', (d) => {
+                const s = d.toString();
+                scanUrl(s);
+                updateTail(s);
+                send(s, 'output');
+            });
+            currentChild.stderr.on('data', (d) => {
+                const s = d.toString();
+                scanUrl(s);
+                updateTail(s);
+                send(s, 'output');
+            });
             currentChild.on('error', (e) => {
                 send(`certoraRun process error: ${e.message}`, 'error');
             });
             currentChild.on('close', () => {
                 currentChild = null;
-                const combined = `${out}\n${err}`;
-                const urlMatches = combined.match(/https:\/\/prover\.certora\.com\/output\/[^\s]+/g);
-                const url = urlMatches && urlMatches.length ? urlMatches[urlMatches.length - 1] : '';
+                const url = foundUrl;
                 if (url) {
-                    send(url, 'url');
+                    // Flush URL separately to avoid being batched with large chunks
+                    flushSSE(true);
+                    writeSSE({ type: 'url', message: url });
                     send('certoraRun successful, verification URL obtained', 'success');
-                    resolve({ success: true, url, output: combined });
+                    resolve({ success: true, url, output: tail });
                 } else {
                     send('certoraRun did not return verification URL, considered as failure', 'error');
-                    resolve({ success: false, url: '', output: combined });
+                    resolve({ success: false, url: '', output: tail });
                 }
             });
         });
@@ -904,8 +1100,6 @@ ${String(promptText || '').replace(/\0/g, '')}`
         try {
             const startIdx = _resumeInfo ? _resumeInfo.originalStartIndex : 0;
             const totalItems = _resumeInfo ? _resumeInfo.totalItems : analyses.length;
-
-            send(`Starting sequential fix, ${analyses.length} items total (${startIdx > 0 ? `resuming from ${startIdx + 1}` : 'from beginning'})`, 'info');
 
             // Normalize input
             const items = analyses.map((a, i) => {
@@ -953,7 +1147,7 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 // Priority: 1. Individual item's content, 2. Global content parameter
                 let certoraOutputSection = '';
                 let usedContent = null;
-                
+
                 // First try to use individual item's original content (preferred)
                 if (item.content && typeof item.content === 'string' && item.content.trim()) {
                     usedContent = item.content;
@@ -963,7 +1157,7 @@ ${String(promptText || '').replace(/\0/g, '')}`
                     // Fallback to global content parameter
                     usedContent = content;
                 }
-                
+
                 if (usedContent) {
                     certoraOutputSection = `\n\n\`\`\`\nCERTORA_OUTPUT:\n${usedContent}\n\`\`\``;
                 }
@@ -1077,14 +1271,16 @@ ${result.output.slice(-9000)}
             }
 
             send('Sequential fix flow completed', 'success');
-            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            flushSSE(true);
+            writeSSE({ type: 'complete' });
             activeFixRunning = false;
             res.end();
 
         } catch (e) {
             send(`Sequential fix error: ${e.message}`, 'error');
             if (e && e.stack) send(e.stack, 'output');
-            res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+            flushSSE(true);
+            writeSSE({ type: 'complete' });
             activeFixRunning = false;
             res.end();
         }
