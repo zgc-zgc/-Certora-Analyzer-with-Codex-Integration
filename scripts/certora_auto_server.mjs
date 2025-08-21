@@ -613,9 +613,16 @@ ${content}`;
         }
 
         // Analysis phase: read-only sandbox + never approve + high reasoning effort + detailed summary
+        // IMPORTANT: Configure retry settings for your specific model provider                                
+        // Replace 'packycode' with your provider name from ~/.codex/config.toml                                
+        // Examples:                                                                                             
+        //   - For OpenAI: 'model_providers.openai.request_max_retries=100'                                    
+        //   - For Anthropic: 'model_providers.anthropic.request_max_retries=100'                               
         const codexArgs = [
             'exec',
             '--sandbox', 'read-only',
+            '-c', 'model_providers.packycode.request_max_retries=100',
+            '-c', 'model_providers.packycode.stream_max_retries=100',
             '-c', 'approval_policy=never',
             '-c', 'model_reasoning_effort=high',
             '-c', 'model_reasoning_summary=detailed'
@@ -974,6 +981,8 @@ function handleSequentialFix(req, res) {
             }
             const args = [
                 'exec',
+                '-c', 'model_providers.packycode.request_max_retries=100',
+                '-c', 'model_providers.packycode.stream_max_retries=100',
                 '--sandbox', 'workspace-write',
                 '-c', 'approval_policy=never',
                 '-c', 'model_reasoning_effort=high',
@@ -1090,7 +1099,10 @@ ${String(promptText || '').replace(/\0/g, '')}`
                     send('certoraRun successful, verification URL obtained', 'success');
                     resolve({ success: true, url, output: tail });
                 } else {
+                    // Flush any pending output before sending error
+                    flushSSE(true);
                     send('certoraRun did not return verification URL, considered as failure', 'error');
+                    flushSSE(true);  // Ensure error is sent before any further processing
                     resolve({ success: false, url: '', output: tail });
                 }
             });
@@ -1238,7 +1250,10 @@ ${String(promptText || '').replace(/\0/g, '')}`
                     const hasSyntaxError = lower.includes('syntax error') || lower.includes('parse error') || lower.includes('compilation error');
 
                     if (hasSyntaxError) {
+                        // First show the error, then announce we're fixing it
+                        flushSSE(true);  // Flush any pending output
                         send('❌ certoraRun detected syntax errors; sending to Codex to fix...', 'error');
+                        flushSSE(true);  // Ensure error message is sent before the header
                         send(`\n===== [Start Syntax Fix] Attempt ${attempt} =====\n`, 'output');
                         send('🔧 Invoking Codex to fix syntax errors...', 'info');
 
@@ -1348,34 +1363,34 @@ let taskIdCounter = 0;
 // WebSocket connection handler
 wss.on('connection', (ws) => {
     console.log('New WebSocket connection established');
-    
+
     // Store tasks associated with this WebSocket connection
     ws.tasks = new Set();
-    
+
     // Send connection confirmation
     ws.send(JSON.stringify({
         type: 'connected',
         message: 'WebSocket connection established'
     }));
-    
+
     // Handle incoming messages
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
-            
+
             switch (data.type) {
                 case 'analyze':
                     await handleWebSocketAnalysis(ws, data);
                     break;
-                    
+
                 case 'stop':
                     stopWebSocketAnalysis(data.id, ws);
                     break;
-                    
+
                 case 'ping':
                     ws.send(JSON.stringify({ type: 'pong' }));
                     break;
-                    
+
                 default:
                     ws.send(JSON.stringify({
                         type: 'error',
@@ -1390,7 +1405,7 @@ wss.on('connection', (ws) => {
             }));
         }
     });
-    
+
     // Handle connection close
     ws.on('close', () => {
         console.log('WebSocket connection closed');
@@ -1402,7 +1417,7 @@ wss.on('connection', (ws) => {
             }
         }
     });
-    
+
     ws.on('error', (error) => {
         console.error('WebSocket error:', error);
     });
@@ -1411,7 +1426,7 @@ wss.on('connection', (ws) => {
 // Handle WebSocket analysis request
 async function handleWebSocketAnalysis(ws, data) {
     const { id, content, ruleType, projectPath } = data;  // Changed from 'type' to 'ruleType'
-    
+
     if (!id || !content || !ruleType) {
         ws.send(JSON.stringify({
             type: 'error',
@@ -1420,19 +1435,19 @@ async function handleWebSocketAnalysis(ws, data) {
         }));
         return;
     }
-    
+
     // Generate unique task ID
     const taskId = `task_${++taskIdCounter}_${id}`;
-    
+
     // Store task ID mapping for stop functionality
     if (!ws.taskMapping) ws.taskMapping = new Map();
     ws.taskMapping.set(id, taskId);  // Map outputFile to taskId
     ws.tasks.add(taskId);
-    
+
     try {
         const { spawn } = await import('child_process');
         let promptText;
-        
+
         if (ruleType === 'VIOLATED') {
             promptText = `Analyze the following Certora rule violation from CERTORA_OUTPUT and propose minimal, sound SPEC/CONF change suggestions . If necessary, also propose changes to the HARNESS CONTRACTS .THINK HARDER,ULTRAL THINK.
 
@@ -1464,36 +1479,38 @@ You have the ability to search the web to get any necessary information.
 CERTORA_OUTPUT:
 ${content}`;
         }
-        
+
         // Clean null bytes from prompt text
         const cleanPromptText = promptText.replace(/\0/g, '');
-        
+
         // Send start message
         ws.send(JSON.stringify({
             type: 'start',
             id,
             message: 'Starting analysis...'
         }));
-        
+
         // Analysis phase: read-only sandbox + never approve + high reasoning effort + detailed summary
         const codexArgs = [
             'exec',
+            '-c', 'model_providers.packycode.request_max_retries=100',
+            '-c', 'model_providers.packycode.stream_max_retries=100',
             '--sandbox', 'read-only',
             '-c', 'approval_policy=never',
             '-c', 'model_reasoning_effort=high',
             '-c', 'model_reasoning_summary=detailed'
         ];
-        
+
         if (projectPath && projectPath.trim()) {
             codexArgs.push('-C', projectPath.trim());
         }
         codexArgs.push(cleanPromptText);
-        
+
         const codexProcess = spawn('codex', codexArgs, {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env }
         });
-        
+
         // Store active task
         activeTasks.set(taskId, {
             ws,
@@ -1501,12 +1518,12 @@ ${content}`;
             id,
             ruleName: data.ruleName || id
         });
-        
+
         // Collect output for final extraction
         const MAX_TAIL_BYTES = 2097152; // 2MB
         let tailChunks = [];
         let tailBytes = 0;
-        
+
         const appendTail = (chunk) => {
             const str = chunk.toString();
             const size = Buffer.byteLength(str, 'utf8');
@@ -1517,12 +1534,12 @@ ${content}`;
                 tailBytes -= Buffer.byteLength(removed, 'utf8');
             }
         };
-        
+
         // Handle stdout
         codexProcess.stdout.on('data', (data) => {
             const chunk = data.toString();
             appendTail(chunk);
-            
+
             // Send progress update
             ws.send(JSON.stringify({
                 type: 'output',
@@ -1530,31 +1547,31 @@ ${content}`;
                 data: chunk
             }));
         });
-        
+
         // Handle stderr
         codexProcess.stderr.on('data', (data) => {
             const chunk = data.toString();
             appendTail(chunk);
-            
+
             ws.send(JSON.stringify({
                 type: 'error',
                 id,
                 data: chunk
             }));
         });
-        
+
         // Handle process completion
         codexProcess.on('close', (code) => {
             console.log(`Codex process for ${id} ended with code: ${code}`);
-            
+
             // Remove from active tasks
             activeTasks.delete(taskId);
-            
+
             if (code === 0) {
                 // Extract final answer
                 const fullOutput = tailChunks.join('');
                 const finalResult = extractCodexAnswer(fullOutput);
-                
+
                 ws.send(JSON.stringify({
                     type: 'complete',
                     id,
@@ -1570,18 +1587,18 @@ ${content}`;
                 }));
             }
         });
-        
+
         codexProcess.on('error', (error) => {
             console.error(`Codex process error for ${id}:`, error);
             activeTasks.delete(taskId);
-            
+
             ws.send(JSON.stringify({
                 type: 'error',
                 id,
                 message: error.message
             }));
         });
-        
+
     } catch (error) {
         console.error(`Analysis error for ${id}:`, error);
         ws.send(JSON.stringify({
@@ -1595,7 +1612,7 @@ ${content}`;
 // Stop WebSocket analysis
 function stopWebSocketAnalysis(outputFileOrTaskId, ws) {
     let taskId = outputFileOrTaskId;
-    
+
     // If ws is provided, try to map outputFile to taskId
     if (ws && ws.taskMapping) {
         const mappedTaskId = ws.taskMapping.get(outputFileOrTaskId);
@@ -1603,10 +1620,10 @@ function stopWebSocketAnalysis(outputFileOrTaskId, ws) {
             taskId = mappedTaskId;
         }
     }
-    
+
     // Also try to find task by searching for matching id
     let task = activeTasks.get(taskId);
-    
+
     // If not found, search by outputFile id
     if (!task) {
         for (const [tid, t] of activeTasks.entries()) {
@@ -1617,7 +1634,7 @@ function stopWebSocketAnalysis(outputFileOrTaskId, ws) {
             }
         }
     }
-    
+
     if (task && task.process) {
         console.log(`Stopping task ${taskId} (outputFile: ${task.id})`);
         try {
@@ -1631,7 +1648,7 @@ function stopWebSocketAnalysis(outputFileOrTaskId, ws) {
             console.error(`Error stopping task ${taskId}:`, error);
         }
         activeTasks.delete(taskId);
-        
+
         // Clean up mapping
         if (ws && ws.taskMapping) {
             ws.taskMapping.delete(task.id);

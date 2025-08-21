@@ -740,17 +740,17 @@
         let allRulesData = null;
         let jsonContents = {};
         let processedRules = [];
-        
+
         let stopAnalysisFlag = false;
         const analysisControllers = new Map(); // Maintain controller per analysis
-        
+
         // WebSocket connection pool
         const wsPool = [];
-        const wsPoolSize = 10; // Number of WebSocket connections in the pool
+        const wsPoolSize = 50; // Number of WebSocket connections in the pool
         let wsRoundRobin = 0;
         const pendingAnalyses = new Map(); // Map of id -> {resolve, reject, data}
         let wsReconnectTimer = null;
-        
+
         // Initialize WebSocket pool
         function initWebSocketPool() {
             console.log('Initializing WebSocket pool...');
@@ -758,16 +758,16 @@
                 createWebSocketConnection(i);
             }
         }
-        
+
         // Create a single WebSocket connection
         function createWebSocketConnection(index) {
             const ws = new WebSocket('ws://localhost:3002');
-            
+
             ws.onopen = () => {
                 console.log(`WebSocket ${index} connected`);
                 wsPool[index] = ws;
             };
-            
+
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
@@ -776,11 +776,11 @@
                     console.error('WebSocket message parse error:', error);
                 }
             };
-            
+
             ws.onerror = (error) => {
                 console.error(`WebSocket ${index} error:`, error);
             };
-            
+
             ws.onclose = () => {
                 console.log(`WebSocket ${index} closed, will reconnect...`);
                 wsPool[index] = null;
@@ -792,23 +792,23 @@
                     }, 2000);
                 }
             };
-            
+
             return ws;
         }
-        
+
         // Get next available WebSocket from pool (round-robin)
         function getWebSocket() {
             let attempts = 0;
             while (attempts < wsPoolSize) {
                 const ws = wsPool[wsRoundRobin];
                 wsRoundRobin = (wsRoundRobin + 1) % wsPoolSize;
-                
+
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     return ws;
                 }
                 attempts++;
             }
-            
+
             // No available WebSocket, try to find any that's connecting
             for (let i = 0; i < wsPoolSize; i++) {
                 const ws = wsPool[i];
@@ -816,34 +816,34 @@
                     return ws; // Will queue the message
                 }
             }
-            
+
             console.warn('No available WebSocket connections');
             return null;
         }
-        
+
         // Handle WebSocket messages
         function handleWebSocketMessage(data) {
             const { type, id } = data;
-            
+
             if (!id) return;
-            
+
             const pending = pendingAnalyses.get(id);
             if (!pending) {
                 // Skip if not a pending analysis (might be for other purposes)
                 return;
             }
-            
+
             const { textarea, analyzeBtn, stopBtn } = pending;
-            
+
             switch (type) {
                 case 'connected':
                     console.log('WebSocket connected:', data.message);
                     break;
-                    
+
                 case 'start':
                     if (textarea) textarea.value = 'Analyzing...';
                     break;
-                    
+
                 case 'output':
                     // Stream output to textarea
                     if (textarea) {
@@ -859,13 +859,13 @@
                     // Store full output
                     pending.fullOutput = (pending.fullOutput || '') + data.data;
                     break;
-                    
+
                 case 'error':
                     if (textarea) {
                         textarea.value = `Error: ${data.message || data.data}`;
                     }
                     break;
-                    
+
                 case 'complete':
                     // Analysis completed
                     if (data.success && data.result) {
@@ -881,21 +881,21 @@
                         }
                         pending.reject(new Error(data.message));
                     }
-                    
+
                     // Clean up UI
                     if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                     if (stopBtn) stopBtn.style.display = 'none';
-                    
+
                     // Remove from pending
                     pendingAnalyses.delete(id);
                     analysisControllers.delete(id);
                     break;
-                    
+
                 default:
                     console.log(`Unknown WebSocket message type: ${type}`, data);
             }
         }
-        
+
         // Send analysis request via WebSocket
         async function analyzeViaWebSocket(rule, index, showProgress = false) {
             return new Promise((resolve, reject) => {
@@ -904,12 +904,12 @@
                     reject(new Error('No available WebSocket connection'));
                     return;
                 }
-                
+
                 const outputFile = rule.outputFile;
                 const textarea = document.getElementById(`analysis-${outputFile}`);
                 const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
                 const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
-                
+
                 // Store pending analysis
                 pendingAnalyses.set(outputFile, {
                     resolve,
@@ -920,11 +920,11 @@
                     showProgress,
                     fullOutput: ''
                 });
-                
+
                 // Create abort controller for compatibility
                 const controller = new AbortController();
                 analysisControllers.set(outputFile, controller);
-                
+
                 // Send analysis request
                 const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
                 const message = {
@@ -935,7 +935,7 @@
                     ruleName: rule.ruleName,
                     projectPath: projectPath
                 };
-                
+
                 if (ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify(message));
                 } else if (ws.readyState === WebSocket.CONNECTING) {
@@ -950,7 +950,7 @@
                 }
             });
         }
-        
+
         // Initialize WebSocket pool on load
         initWebSocketPool();
         let lastFixAnalyses = []; // Cache for sequential fix
@@ -1253,27 +1253,27 @@
 
                 // Use WebSocket for analysis (enable showProgress for streaming)
                 const result = await analyzeViaWebSocket(rule, index, true);
-                
+
                 console.log(`WebSocket analysis completed for ${outputFile}`);
-                
+
                 // Analysis succeeded
                 textarea.value = result;
                 textarea.disabled = false;
-                
+
                 // Restore button state
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
 
             } catch (error) {
                 console.error(`WebSocket analysis error for ${outputFile}:`, error);
-                
+
                 // Handle retry logic
                 if (retryCount < maxRetries) {
                     console.log(`Retrying analysis for ${outputFile} (${retryCount + 1}/${maxRetries})`);
-                    
+
                     // Wait 2s then retry
                     await new Promise(resolve => setTimeout(resolve, 2000));
-                    
+
                     // Only retry during batch analysis
                     if (isBatchAnalysis && !stopAnalysisFlag) {
                         return analyzeRule(index, isBatchAnalysis, retryCount + 1);
@@ -1283,7 +1283,7 @@
                     textarea.value = `Analysis failed after ${maxRetries} retries: ${error.message}`;
                     textarea.disabled = false;
                 }
-                
+
                 // Restore button state
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
@@ -1366,10 +1366,10 @@
                         id: outputFile
                     }));
                 }
-                
+
                 // Clean up pending
                 pendingAnalyses.delete(outputFile);
-                
+
                 // Update UI
                 const { textarea, analyzeBtn, stopBtn } = pending;
                 if (textarea) {
@@ -1379,7 +1379,7 @@
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
             }
-            
+
             // Also check legacy controllers
             const controller = analysisControllers.get(outputFile);
             if (controller) {
@@ -1461,7 +1461,7 @@
                         id: outputFile
                     }));
                 }
-                
+
                 // Update UI
                 const { textarea, analyzeBtn, stopBtn } = pending;
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
@@ -1472,7 +1472,7 @@
                 }
             }
             pendingAnalyses.clear();
-            
+
             // Also stop legacy controllers
             analysisControllers.forEach((controller, outputFile) => {
                 controller.abort();
@@ -1770,7 +1770,7 @@
                     showMainFixStatus(data.message, 'success');
                     outputContent.innerHTML += `<span style="color:#20c997;">[SUCCESS]</span> ${escapeHtml(data.message)}<br>`;
                     outputContent.scrollTop = outputContent.scrollHeight;
-                    
+
                     // Also update per-rule fix status for success messages
                     updateRuleStatus(data.message);
                     break;
