@@ -743,6 +743,216 @@
         
         let stopAnalysisFlag = false;
         const analysisControllers = new Map(); // Maintain controller per analysis
+        
+        // WebSocket connection pool
+        const wsPool = [];
+        const wsPoolSize = 10; // Number of WebSocket connections in the pool
+        let wsRoundRobin = 0;
+        const pendingAnalyses = new Map(); // Map of id -> {resolve, reject, data}
+        let wsReconnectTimer = null;
+        
+        // Initialize WebSocket pool
+        function initWebSocketPool() {
+            console.log('Initializing WebSocket pool...');
+            for (let i = 0; i < wsPoolSize; i++) {
+                createWebSocketConnection(i);
+            }
+        }
+        
+        // Create a single WebSocket connection
+        function createWebSocketConnection(index) {
+            const ws = new WebSocket('ws://localhost:3002');
+            
+            ws.onopen = () => {
+                console.log(`WebSocket ${index} connected`);
+                wsPool[index] = ws;
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                } catch (error) {
+                    console.error('WebSocket message parse error:', error);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error(`WebSocket ${index} error:`, error);
+            };
+            
+            ws.onclose = () => {
+                console.log(`WebSocket ${index} closed, will reconnect...`);
+                wsPool[index] = null;
+                // Reconnect after delay
+                if (!wsReconnectTimer) {
+                    wsReconnectTimer = setTimeout(() => {
+                        wsReconnectTimer = null;
+                        createWebSocketConnection(index);
+                    }, 2000);
+                }
+            };
+            
+            return ws;
+        }
+        
+        // Get next available WebSocket from pool (round-robin)
+        function getWebSocket() {
+            let attempts = 0;
+            while (attempts < wsPoolSize) {
+                const ws = wsPool[wsRoundRobin];
+                wsRoundRobin = (wsRoundRobin + 1) % wsPoolSize;
+                
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    return ws;
+                }
+                attempts++;
+            }
+            
+            // No available WebSocket, try to find any that's connecting
+            for (let i = 0; i < wsPoolSize; i++) {
+                const ws = wsPool[i];
+                if (ws && ws.readyState === WebSocket.CONNECTING) {
+                    return ws; // Will queue the message
+                }
+            }
+            
+            console.warn('No available WebSocket connections');
+            return null;
+        }
+        
+        // Handle WebSocket messages
+        function handleWebSocketMessage(data) {
+            const { type, id } = data;
+            
+            if (!id) return;
+            
+            const pending = pendingAnalyses.get(id);
+            if (!pending) {
+                // Skip if not a pending analysis (might be for other purposes)
+                return;
+            }
+            
+            const { textarea, analyzeBtn, stopBtn } = pending;
+            
+            switch (type) {
+                case 'connected':
+                    console.log('WebSocket connected:', data.message);
+                    break;
+                    
+                case 'start':
+                    if (textarea) textarea.value = 'Analyzing...';
+                    break;
+                    
+                case 'output':
+                    // Stream output to textarea
+                    if (textarea) {
+                        const current = textarea.value;
+                        if (current === 'Analyzing...' || current === 'Connecting to Codex...' || current === 'Starting analysis...') {
+                            textarea.value = data.data;
+                        } else {
+                            textarea.value = current + data.data;
+                        }
+                        // Auto-scroll to bottom
+                        textarea.scrollTop = textarea.scrollHeight;
+                    }
+                    // Store full output
+                    pending.fullOutput = (pending.fullOutput || '') + data.data;
+                    break;
+                    
+                case 'error':
+                    if (textarea) {
+                        textarea.value = `Error: ${data.message || data.data}`;
+                    }
+                    break;
+                    
+                case 'complete':
+                    // Analysis completed
+                    if (data.success && data.result) {
+                        if (textarea) {
+                            textarea.value = data.result;
+                            textarea.disabled = false;
+                        }
+                        pending.resolve(data.result);
+                    } else {
+                        if (textarea) {
+                            textarea.value = `Analysis failed: ${data.message}`;
+                            textarea.disabled = false;
+                        }
+                        pending.reject(new Error(data.message));
+                    }
+                    
+                    // Clean up UI
+                    if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                    if (stopBtn) stopBtn.style.display = 'none';
+                    
+                    // Remove from pending
+                    pendingAnalyses.delete(id);
+                    analysisControllers.delete(id);
+                    break;
+                    
+                default:
+                    console.log(`Unknown WebSocket message type: ${type}`, data);
+            }
+        }
+        
+        // Send analysis request via WebSocket
+        async function analyzeViaWebSocket(rule, index, showProgress = false) {
+            return new Promise((resolve, reject) => {
+                const ws = getWebSocket();
+                if (!ws) {
+                    reject(new Error('No available WebSocket connection'));
+                    return;
+                }
+                
+                const outputFile = rule.outputFile;
+                const textarea = document.getElementById(`analysis-${outputFile}`);
+                const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
+                const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
+                
+                // Store pending analysis
+                pendingAnalyses.set(outputFile, {
+                    resolve,
+                    reject,
+                    textarea,
+                    analyzeBtn,
+                    stopBtn,
+                    showProgress,
+                    fullOutput: ''
+                });
+                
+                // Create abort controller for compatibility
+                const controller = new AbortController();
+                analysisControllers.set(outputFile, controller);
+                
+                // Send analysis request
+                const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
+                const message = {
+                    type: 'analyze',
+                    id: outputFile,
+                    content: rule.markdown,
+                    ruleType: rule.type,  // Changed from 'type' to 'ruleType' to avoid conflict
+                    ruleName: rule.ruleName,
+                    projectPath: projectPath
+                };
+                
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(message));
+                } else if (ws.readyState === WebSocket.CONNECTING) {
+                    // Wait for connection
+                    ws.addEventListener('open', () => {
+                        ws.send(JSON.stringify(message));
+                    }, { once: true });
+                } else {
+                    reject(new Error('WebSocket not ready'));
+                    pendingAnalyses.delete(outputFile);
+                    analysisControllers.delete(outputFile);
+                }
+            });
+        }
+        
+        // Initialize WebSocket pool on load
+        initWebSocketPool();
         let lastFixAnalyses = []; // Cache for sequential fix
         let fixAbortController = null; // Controller for sequential fix (pause/terminate)
 
@@ -1015,7 +1225,7 @@
             }
 
             // If already analyzing this rule, skip
-            if (analysisControllers.has(outputFile)) {
+            if (pendingAnalyses.has(outputFile)) {
                 console.log(`Rule ${outputFile} is already being analyzed, skipping`);
                 return;
             }
@@ -1031,141 +1241,52 @@
             }
             textarea.disabled = true;
 
-            // Create AbortController for this analysis
-            const controller = new AbortController();
-            analysisControllers.set(outputFile, controller);
-
-            console.log(`Created controller, current count: ${analysisControllers.size}`);
-
-            // Check if controller is already aborted
-            if (controller.signal.aborted) {
-                console.error('Controller aborted immediately after creation!');
-                analysisControllers.delete(outputFile);
-                textarea.value = 'Analysis failed: controller aborted';
-                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
-                if (stopBtn) stopBtn.style.display = 'none';
-                return;
-            }
+            // No need for AbortController with WebSocket
 
             try {
-                console.log(`Sending streaming analysis request: ${rule.type}, first 100 chars: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
+                console.log(`Sending WebSocket analysis request: ${rule.type}, first 100 chars: ${rule.markdown ? rule.markdown.substring(0, 100) : 'null'}`);
 
                 // Ensure markdown exists
                 if (!rule.markdown) {
                     throw new Error('Markdown content is empty');
                 }
 
-                const projectPathMain = (document.getElementById('project-path-main')?.value || '').trim();
-                const requestBody = {
-                    content: rule.markdown,
-                    type: rule.type
-                };
-                if (projectPathMain) {
-                    requestBody.projectPath = projectPathMain;
-                }
-
-                console.log(`Request body size: ${JSON.stringify(requestBody).length} bytes`);
-
-                // Use streaming endpoint
-                const response = await fetch('http://localhost:3002/analyze-rule-stream', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody),
-                    signal: controller.signal
-                });
-
-                console.log(`Received response: ${response.status}`);
-
-                // Check response ok
-                if (!response.ok) {
-                    if (response.status === 500 && retryCount < maxRetries) {
-                        // HTTP 500: retry
-                        console.log(`HTTP 500 error, retrying in 2s (${retryCount + 1}/${maxRetries})`);
-                        analysisControllers.delete(outputFile);
-
-                        // Wait 2s then retry
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-
-                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
-                    }
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                // Handle SSE streaming response
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                // Build persistent context for this rule
-                const ctx = { fullThinkingProcess: '', finalResult: '' };
-
-                textarea.value = ''; // Clear initial content
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    // Check abort
-                    if (controller.signal.aborted) {
-                        reader.cancel();
-                        throw new Error('Analysis stopped by user');
-                    }
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // keep incomplete line
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.slice(6));
-                                handleAnalysisStreamData(data, textarea, outputFile, ctx);
-                            } catch (e) {
-                                console.error('Error parsing SSE data:', e, line);
-                            }
-                        }
-                    }
-                }
-
-                console.log(`Streaming analysis completed: ${outputFile}`);
-
-            } catch (error) {
-                console.error(`Analysis error: ${outputFile}`, error);
-                console.error('Error details:', {
-                    name: error.name,
-                    message: error.message,
-                    stack: error.stack
-                });
-
-                if (error.name === 'AbortError') {
-                    console.log('Request aborted, controller state:', controller.signal.aborted);
-                    textarea.value = 'Analysis cancelled';
-                } else if (error.message.includes('Failed to fetch')) {
-                    if (retryCount < maxRetries) {
-                        console.log(`Network error, will retry: ${error.message}`);
-                        analysisControllers.delete(outputFile);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
-                    }
-                    textarea.value = 'Cannot connect to server. Please ensure the server is running';
-                } else if (error.message === 'Markdown content is empty') {
-                    textarea.value = 'Error: no content to analyze';
-                } else {
-                    if (retryCount < maxRetries && error.name !== 'AbortError') {
-                        console.log(`Generic error, will retry: ${error.message}`);
-                        analysisControllers.delete(outputFile);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        return await analyzeRule(index, isBatchAnalysis, retryCount + 1);
-                    }
-                    textarea.value = `Error: ${error.message}`;
-                }
-            } finally {
+                // Use WebSocket for analysis (enable showProgress for streaming)
+                const result = await analyzeViaWebSocket(rule, index, true);
+                
+                console.log(`WebSocket analysis completed for ${outputFile}`);
+                
+                // Analysis succeeded
+                textarea.value = result;
                 textarea.disabled = false;
+                
                 // Restore button state
                 if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
                 if (stopBtn) stopBtn.style.display = 'none';
-                // Cleanup controller
-                analysisControllers.delete(outputFile);
-                console.log(`Cleanup controller, remaining count: ${analysisControllers.size}`);
+
+            } catch (error) {
+                console.error(`WebSocket analysis error for ${outputFile}:`, error);
+                
+                // Handle retry logic
+                if (retryCount < maxRetries) {
+                    console.log(`Retrying analysis for ${outputFile} (${retryCount + 1}/${maxRetries})`);
+                    
+                    // Wait 2s then retry
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    // Only retry during batch analysis
+                    if (isBatchAnalysis && !stopAnalysisFlag) {
+                        return analyzeRule(index, isBatchAnalysis, retryCount + 1);
+                    }
+                } else {
+                    // Max retries reached
+                    textarea.value = `Analysis failed after ${maxRetries} retries: ${error.message}`;
+                    textarea.disabled = false;
+                }
+                
+                // Restore button state
+                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                if (stopBtn) stopBtn.style.display = 'none';
             }
         }
 
@@ -1234,22 +1355,36 @@
         }
 
         function stopSingleAnalysis(outputFile) {
+            // Stop via WebSocket if available
+            const pending = pendingAnalyses.get(outputFile);
+            if (pending) {
+                // Send stop message via WebSocket
+                const ws = getWebSocket();
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'stop',
+                        id: outputFile
+                    }));
+                }
+                
+                // Clean up pending
+                pendingAnalyses.delete(outputFile);
+                
+                // Update UI
+                const { textarea, analyzeBtn, stopBtn } = pending;
+                if (textarea) {
+                    textarea.value = 'Analysis stopped';
+                    textarea.disabled = false;
+                }
+                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                if (stopBtn) stopBtn.style.display = 'none';
+            }
+            
+            // Also check legacy controllers
             const controller = analysisControllers.get(outputFile);
             if (controller) {
                 controller.abort();
                 analysisControllers.delete(outputFile);
-            }
-
-            const analyzeBtn = document.getElementById(`analyze-btn-${outputFile}`);
-            const stopBtn = document.getElementById(`stop-btn-${outputFile}`);
-            const textarea = document.getElementById(`analysis-${outputFile}`);
-
-            // Restore button state
-            if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
-            if (stopBtn) stopBtn.style.display = 'none';
-            if (textarea) {
-                textarea.value = 'Analysis stopped';
-                textarea.disabled = false;
             }
         }
 
@@ -1316,7 +1451,29 @@
                 batchBtn.innerHTML = '🤖 Codex analyze all rules';
             }
 
-            // Stop all ongoing analyses
+            // Stop all WebSocket analyses
+            for (const [outputFile, pending] of pendingAnalyses.entries()) {
+                // Send stop message
+                const ws = getWebSocket();
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'stop',
+                        id: outputFile
+                    }));
+                }
+                
+                // Update UI
+                const { textarea, analyzeBtn, stopBtn } = pending;
+                if (analyzeBtn) analyzeBtn.style.display = 'inline-block';
+                if (stopBtn) stopBtn.style.display = 'none';
+                if (textarea && (textarea.value === 'Analyzing...' || textarea.value === 'Connecting to Codex...')) {
+                    textarea.value = 'Batch analysis stopped';
+                    textarea.disabled = false;
+                }
+            }
+            pendingAnalyses.clear();
+            
+            // Also stop legacy controllers
             analysisControllers.forEach((controller, outputFile) => {
                 controller.abort();
                 // Update corresponding UI

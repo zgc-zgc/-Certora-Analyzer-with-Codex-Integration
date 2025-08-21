@@ -4,6 +4,8 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
+import { WebSocketServer } from 'ws';
+import http from 'http';
 
 const app = express();
 app.use(cors());
@@ -1327,11 +1329,320 @@ app.post('/kill-processes', async (req, res) => {
 });
 
 const PORT = 3002;
-app.listen(PORT, () => {
+const server = http.createServer(app);
+
+// Create WebSocket server
+const wss = new WebSocketServer({ server });
+
+// Store active analysis tasks: Map<taskId, {ws, process, ruleName}>
+const activeTasks = new Map();
+let taskIdCounter = 0;
+
+// WebSocket connection handler
+wss.on('connection', (ws) => {
+    console.log('New WebSocket connection established');
+    
+    // Store tasks associated with this WebSocket connection
+    ws.tasks = new Set();
+    
+    // Send connection confirmation
+    ws.send(JSON.stringify({
+        type: 'connected',
+        message: 'WebSocket connection established'
+    }));
+    
+    // Handle incoming messages
+    ws.on('message', async (message) => {
+        try {
+            const data = JSON.parse(message);
+            
+            switch (data.type) {
+                case 'analyze':
+                    await handleWebSocketAnalysis(ws, data);
+                    break;
+                    
+                case 'stop':
+                    stopWebSocketAnalysis(data.id, ws);
+                    break;
+                    
+                case 'ping':
+                    ws.send(JSON.stringify({ type: 'pong' }));
+                    break;
+                    
+                default:
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: `Unknown message type: ${data.type}`
+                    }));
+            }
+        } catch (error) {
+            console.error('WebSocket message handling error:', error);
+            ws.send(JSON.stringify({
+                type: 'error',
+                message: error.message
+            }));
+        }
+    });
+    
+    // Handle connection close
+    ws.on('close', () => {
+        console.log('WebSocket connection closed');
+        // Clean up any active tasks for this connection
+        for (const taskId of ws.tasks) {
+            const task = activeTasks.get(taskId);
+            if (task) {
+                stopWebSocketAnalysis(taskId);
+            }
+        }
+    });
+    
+    ws.on('error', (error) => {
+        console.error('WebSocket error:', error);
+    });
+});
+
+// Handle WebSocket analysis request
+async function handleWebSocketAnalysis(ws, data) {
+    const { id, content, ruleType, projectPath } = data;  // Changed from 'type' to 'ruleType'
+    
+    if (!id || !content || !ruleType) {
+        ws.send(JSON.stringify({
+            type: 'error',
+            id,
+            message: 'Missing required parameters: id, content, ruleType'
+        }));
+        return;
+    }
+    
+    // Generate unique task ID
+    const taskId = `task_${++taskIdCounter}_${id}`;
+    
+    // Store task ID mapping for stop functionality
+    if (!ws.taskMapping) ws.taskMapping = new Map();
+    ws.taskMapping.set(id, taskId);  // Map outputFile to taskId
+    ws.tasks.add(taskId);
+    
+    try {
+        const { spawn } = await import('child_process');
+        let promptText;
+        
+        if (ruleType === 'VIOLATED') {
+            promptText = `Analyze the following Certora rule violation from CERTORA_OUTPUT and propose minimal, sound SPEC/CONF change suggestions . If necessary, also propose changes to the HARNESS CONTRACTS .THINK HARDER,ULTRAL THINK.
+
+Output:
+- Classification: real bug vs false positive (e.g., unreachable initial state, missing preconditions, over-broad summaries, env mismatch).
+- Detalied summary: what failed and where (rule, method, invariant).
+- Fixes Suggestions: concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions(e.g., requireInvariant,  method filters, new ghost).
+
+Constraints:
+- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
+
+You have the ability to search the web to get any necessary information.
+
+CERTORA_OUTPUT:
+${content}
+`;
+        } else if (ruleType === 'SANITY_FAILED') {
+            promptText = `Analyze the following Certora SANITY_FAILED rule from CERTORA_OUTPUT and detemine whether this rule is meaningful and if it should be deleted or fixed.If it should be fixed propose minimal, sound SPEC/CONF change suggestions .THINK HARDER,ULTRAL THINK.
+
+Output:
+- Summary: whether this rule is meaningful and if it should be deleted or fixed
+- IF meaningful and should be fixed: propose concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions(e.g., method filters, require).
+
+Constraints:
+- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
+
+You have the ability to search the web to get any necessary information.
+
+CERTORA_OUTPUT:
+${content}`;
+        }
+        
+        // Clean null bytes from prompt text
+        const cleanPromptText = promptText.replace(/\0/g, '');
+        
+        // Send start message
+        ws.send(JSON.stringify({
+            type: 'start',
+            id,
+            message: 'Starting analysis...'
+        }));
+        
+        // Analysis phase: read-only sandbox + never approve + high reasoning effort + detailed summary
+        const codexArgs = [
+            'exec',
+            '--sandbox', 'read-only',
+            '-c', 'approval_policy=never',
+            '-c', 'model_reasoning_effort=high',
+            '-c', 'model_reasoning_summary=detailed'
+        ];
+        
+        if (projectPath && projectPath.trim()) {
+            codexArgs.push('-C', projectPath.trim());
+        }
+        codexArgs.push(cleanPromptText);
+        
+        const codexProcess = spawn('codex', codexArgs, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env }
+        });
+        
+        // Store active task
+        activeTasks.set(taskId, {
+            ws,
+            process: codexProcess,
+            id,
+            ruleName: data.ruleName || id
+        });
+        
+        // Collect output for final extraction
+        const MAX_TAIL_BYTES = 2097152; // 2MB
+        let tailChunks = [];
+        let tailBytes = 0;
+        
+        const appendTail = (chunk) => {
+            const str = chunk.toString();
+            const size = Buffer.byteLength(str, 'utf8');
+            tailChunks.push(str);
+            tailBytes += size;
+            while (tailBytes > MAX_TAIL_BYTES && tailChunks.length > 1) {
+                const removed = tailChunks.shift();
+                tailBytes -= Buffer.byteLength(removed, 'utf8');
+            }
+        };
+        
+        // Handle stdout
+        codexProcess.stdout.on('data', (data) => {
+            const chunk = data.toString();
+            appendTail(chunk);
+            
+            // Send progress update
+            ws.send(JSON.stringify({
+                type: 'output',
+                id,
+                data: chunk
+            }));
+        });
+        
+        // Handle stderr
+        codexProcess.stderr.on('data', (data) => {
+            const chunk = data.toString();
+            appendTail(chunk);
+            
+            ws.send(JSON.stringify({
+                type: 'error',
+                id,
+                data: chunk
+            }));
+        });
+        
+        // Handle process completion
+        codexProcess.on('close', (code) => {
+            console.log(`Codex process for ${id} ended with code: ${code}`);
+            
+            // Remove from active tasks
+            activeTasks.delete(taskId);
+            
+            if (code === 0) {
+                // Extract final answer
+                const fullOutput = tailChunks.join('');
+                const finalResult = extractCodexAnswer(fullOutput);
+                
+                ws.send(JSON.stringify({
+                    type: 'complete',
+                    id,
+                    success: true,
+                    result: finalResult
+                }));
+            } else {
+                ws.send(JSON.stringify({
+                    type: 'complete',
+                    id,
+                    success: false,
+                    message: `Process exited with code: ${code}`
+                }));
+            }
+        });
+        
+        codexProcess.on('error', (error) => {
+            console.error(`Codex process error for ${id}:`, error);
+            activeTasks.delete(taskId);
+            
+            ws.send(JSON.stringify({
+                type: 'error',
+                id,
+                message: error.message
+            }));
+        });
+        
+    } catch (error) {
+        console.error(`Analysis error for ${id}:`, error);
+        ws.send(JSON.stringify({
+            type: 'error',
+            id,
+            message: error.message
+        }));
+    }
+}
+
+// Stop WebSocket analysis
+function stopWebSocketAnalysis(outputFileOrTaskId, ws) {
+    let taskId = outputFileOrTaskId;
+    
+    // If ws is provided, try to map outputFile to taskId
+    if (ws && ws.taskMapping) {
+        const mappedTaskId = ws.taskMapping.get(outputFileOrTaskId);
+        if (mappedTaskId) {
+            taskId = mappedTaskId;
+        }
+    }
+    
+    // Also try to find task by searching for matching id
+    let task = activeTasks.get(taskId);
+    
+    // If not found, search by outputFile id
+    if (!task) {
+        for (const [tid, t] of activeTasks.entries()) {
+            if (t.id === outputFileOrTaskId) {
+                task = t;
+                taskId = tid;
+                break;
+            }
+        }
+    }
+    
+    if (task && task.process) {
+        console.log(`Stopping task ${taskId} (outputFile: ${task.id})`);
+        try {
+            task.process.kill('SIGTERM');
+            setTimeout(() => {
+                if (task.process) {
+                    task.process.kill('SIGKILL');
+                }
+            }, 1000);
+        } catch (error) {
+            console.error(`Error stopping task ${taskId}:`, error);
+        }
+        activeTasks.delete(taskId);
+        
+        // Clean up mapping
+        if (ws && ws.taskMapping) {
+            ws.taskMapping.delete(task.id);
+        }
+        if (ws && ws.tasks) {
+            ws.tasks.delete(taskId);
+        }
+    } else {
+        console.log(`Task not found for: ${outputFileOrTaskId}`);
+    }
+}
+
+server.listen(PORT, () => {
     console.log(`
 ╔════════════════════════════════════════════╗
 ║     Certora Auto Analyzer                 ║
 ║     Server running: http://localhost:${PORT}  ║
+║     WebSocket: ws://localhost:${PORT}        ║
 ╚════════════════════════════════════════════╝
         `);
 });
