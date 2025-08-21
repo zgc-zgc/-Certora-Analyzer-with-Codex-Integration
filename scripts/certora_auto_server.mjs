@@ -1142,7 +1142,10 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 resumeState.currentIndex = currentFixIndex;
 
                 // Cleaner section headers
+                // Flush before sending info to avoid mixing with previous output
+                flushSSE(true);
                 send(`➡️ Start ${actualIndex}/${totalItems}: ${item.ruleName}`, 'info');
+                flushSSE(true);  // Flush info before output
                 send(`\n===== [Start ${actualIndex}/${totalItems}] ${item.ruleName} =====\n`, 'output');
 
                 // Generate single-item prompt with CERTORA_OUTPUT like analysis phase
@@ -1178,7 +1181,9 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 const perPrompt = `${String(basePrompt || '')}\n\n\nAnalysis Results:\n${analysisInCodeBlock}${ruleDataMarkdown}${certoraOutputSection}`;
 
                 const ok = await spawnCodexOnce(perPrompt, item.ruleName);
+                flushSSE(true);  // Flush output before info
                 send(`📋 Result ${actualIndex}: ${ok ? 'Success' : 'Failure'}`, 'info');
+                flushSSE(true);  // Flush info before output
                 send(`===== [Done  ${actualIndex}/${totalItems}] ${ok ? 'Success' : 'Failure'} =====\n`, 'output');
 
                 if (!ok) {
@@ -1189,9 +1194,11 @@ ${String(promptText || '').replace(/\0/g, '')}`
                     send(`❌ Fix ${actualIndex} failed, continue to next`, 'error');
                     // continue to next item
                 } else {
+                    flushSSE(true);  // Flush before success message
                     send(`✅ Fix ${actualIndex} completed`, 'success');
                 }
                 if (i + 1 < items.length) {
+                    flushSSE(true);  // Flush before next item
                     send(`⏭️ Next ${startIdx + i + 2}/${totalItems}`, 'info');
                     send(`⏭️ Next ${startIdx + i + 2}/${totalItems}\n`, 'output');
                 }

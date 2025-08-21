@@ -1770,6 +1770,9 @@
                     showMainFixStatus(data.message, 'success');
                     outputContent.innerHTML += `<span style="color:#20c997;">[SUCCESS]</span> ${escapeHtml(data.message)}<br>`;
                     outputContent.scrollTop = outputContent.scrollHeight;
+                    
+                    // Also update per-rule fix status for success messages
+                    updateRuleStatus(data.message);
                     break;
                 case 'complete':
                     showMainFixStatus('Fix execution finished', 'success');
@@ -1806,11 +1809,12 @@
                 }
             }
 
-            // Detect completion patterns - more flexible matching  
+            // Detect completion patterns - more flexible matching
+            // Add patterns for the actual messages being sent
             const completePatterns = [
+                /📋\s*result\s+(\d+):\s*success/i,  // "📋 Result X: Success"
+                /✅\s*fix\s+(\d+)\s+completed/i,     // "✅ Fix X completed"
                 /(?:completed|done|finished|success)\s+(\d+)\/(\d+)/i,
-                /✅.*(?:fix\s+)?(\d+).*completed/i,
-                /📋\s*result\s+(\d+):\s*success/i,
                 /===== \[done\s+(\d+)\/(\d+)\]\s*success/i
             ];
 
@@ -1828,9 +1832,9 @@
 
             // Detect failure patterns
             const failurePatterns = [
+                /📋\s*result\s+(\d+):\s*failure/i,   // "📋 Result X: Failure"
+                /❌\s*fix\s+(\d+)\s+failed/i,        // "❌ Fix X failed"
                 /(?:failed|failure|error).*(?:item\s*)?(\d+)/i,
-                /❌.*(?:fix\s+)?(\d+)/i,
-                /📋\s*result\s+(\d+):\s*failure/i,
                 /===== \[done\s+(\d+)\/(\d+)\]\s*failure/i
             ];
 
