@@ -133,6 +133,12 @@
             border: 1px solid #f5c2c7;
         }
 
+        /* Skipped item styling */
+        .skipped-rule {
+            text-decoration: line-through;
+            color: #adb5bd;
+        }
+
         .result-table {
             width: 100%;
             border-collapse: collapse;
@@ -550,6 +556,18 @@
             color: #842029;
             border: 1px solid #f5c2c7;
         }
+
+        /* False Positive badge */
+        .badge-fp {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 2px 6px;
+            font-size: 11px;
+            border-radius: 10px;
+            background: #e2e3e5;
+            color: #495057;
+            border: 1px solid #ced4da;
+        }
     </style>
 </head>
 
@@ -636,9 +654,8 @@
                 <button class="btn btn-success" id="batchAnalyzeBtn" onclick="toggleBatchAnalysis()">
                     🤖 Codex analyze all rules
                 </button>
-                <button class="btn btn-warning" onclick="fixAll()">
-                    🔧 Execute sequential fix
-                </button>
+                <button class="btn btn-warning" onclick="fixAll()">🔧 Execute sequential fix</button>
+                <button class="btn btn-primary" onclick="resumeFixFromUI()">⏩ Resume fix from interruption</button>
             </div>
 
             <!-- Fix execution output area - moved to main interface -->
@@ -668,8 +685,9 @@
                             <th style="width: 25%;">Rule Name</th>
                             <th style="width: 10%;">Status</th>
                             <th style="width: 10%;">Data</th>
-                            <th style="width: 40%;">Codex Analysis Result</th>
-                            <th style="width: 15%;">Actions</th>
+                            <th style="width: 35%;">Codex Analysis Result</th>
+                            <th style="width: 10%;">Skip Fix</th>
+                            <th style="width: 10%;">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="result-tbody">
@@ -740,6 +758,7 @@
         let allRulesData = null;
         let jsonContents = {};
         let processedRules = [];
+        let skipFixStates = {}; // outputFile -> boolean
 
         let stopAnalysisFlag = false;
         const analysisControllers = new Map(); // Maintain controller per analysis
@@ -873,6 +892,20 @@
                             textarea.value = data.result;
                             textarea.disabled = false;
                         }
+                        // Detect false positive indicator and tag in UI
+                        try {
+                            if (detectFalsePositive(data.result)) {
+                                const row = document.getElementById(`row-${id}`);
+                                const nameSpan = document.getElementById(`rule-name-${id}`);
+                                if (nameSpan && !nameSpan.dataset.fpTagged) {
+                                    const tag = document.createElement('span');
+                                    tag.className = 'badge-fp';
+                                    tag.textContent = 'False Positive';
+                                    nameSpan.after(tag);
+                                    nameSpan.dataset.fpTagged = '1';
+                                }
+                            }
+                        } catch {}
                         pending.resolve(data.result);
                     } else {
                         if (textarea) {
@@ -894,6 +927,22 @@
                 default:
                     console.log(`Unknown WebSocket message type: ${type}`, data);
             }
+        }
+
+        // Heuristic FP detector from analysis text
+        function detectFalsePositive(text) {
+            if (!text) return false;
+            const t = text.toLowerCase();
+            const patterns = [
+                'false positive',
+                'not a real bug',
+                'benign',
+                'intended behavior',
+                'safe to ignore',
+                'does not violate',
+                'no real violation'
+            ];
+            return patterns.some(p => t.includes(p));
         }
 
         // Send analysis request via WebSocket
@@ -1103,7 +1152,8 @@
                     ...rule,
                     type: 'VIOLATED',
                     markdown: markdown,
-                    displayName: rule.ruleName
+                    displayName: rule.ruleName,
+                    skipFix: Boolean(skipFixStates[rule.outputFile])
                 });
             });
 
@@ -1114,7 +1164,8 @@
                     ...rule,
                     type: 'SANITY_FAILED',
                     markdown: markdown,
-                    displayName: rule.ruleName
+                    displayName: rule.ruleName,
+                    skipFix: false
                 });
             });
 
@@ -1128,8 +1179,10 @@
 
             processedRules.forEach((rule, index) => {
                 const row = document.createElement('tr');
+                row.id = `row-${rule.outputFile}`;
+                const ruleNameCell = `<span id="rule-name-${rule.outputFile}" class="${(rule.skipFix && rule.type === 'VIOLATED') ? 'skipped-rule' : ''}">${formatRuleName(rule.displayName)}</span>`;
                 row.innerHTML = `
-                    <td>${formatRuleName(rule.displayName)}</td>
+                    <td>${ruleNameCell}</td>
                     <td><span class="status-badge status-${rule.status.toLowerCase().replace('_', '-')}">${rule.status}</span></td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 8px;">
@@ -1158,6 +1211,14 @@
                         </div>
                     </td>
                     <td>
+                        ${rule.type === 'VIOLATED' ? `
+                        <label style="display:flex; align-items:center; gap:8px; font-size: 13px; color: #495057;">
+                            <input type="checkbox" id="skipfix-${rule.outputFile}" ${rule.skipFix ? 'checked' : ''} 
+                                   onchange="toggleSkipFix('${rule.outputFile}', ${index}, this.checked)">
+                            Skip Fix
+                        </label>` : '<span style="color:#adb5bd;">—</span>'}
+                    </td>
+                    <td>
                         <div style="display: flex; gap: 5px;">
                             <button class="btn btn-primary" id="analyze-btn-${rule.outputFile}" 
                                     style="padding: 6px 12px; font-size: 14px;" 
@@ -1169,9 +1230,39 @@
                     </td>
                 `;
                 tbody.appendChild(row);
+                // Apply initial skip styling if needed
+                if (rule.skipFix && rule.type === 'VIOLATED') {
+                    try { document.getElementById(`row-${rule.outputFile}`).style.opacity = '0.65'; } catch {}
+                    try { document.getElementById(`rule-name-${rule.outputFile}`).classList.add('skipped-rule'); } catch {}
+                }
             });
 
             document.getElementById('result-section').style.display = 'block';
+        }
+
+        function toggleSkipFix(outputFile, index, checked) {
+            try {
+                skipFixStates[outputFile] = !!checked;
+                if (processedRules[index]) processedRules[index].skipFix = !!checked;
+                const row = document.getElementById(`row-${outputFile}`);
+                if (row) row.style.opacity = checked ? '0.65' : '1';
+                const nameEl = document.getElementById(`rule-name-${outputFile}`);
+                if (nameEl) {
+                    if (checked) nameEl.classList.add('skipped-rule');
+                    else nameEl.classList.remove('skipped-rule');
+                }
+                // Optional: inform backend to persist skip state in memory
+                const ruleName = processedRules[index]?.displayName || '';
+                if (ruleName) {
+                    fetch('http://localhost:3002/update-skip-status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ruleName, skipFix: !!checked })
+                    }).catch(() => { /* ignore network errors here */ });
+                }
+            } catch (e) {
+                console.warn('toggleSkipFix error', e);
+            }
         }
 
         // Preview area is editable directly; no modal/switch needed
@@ -1512,11 +1603,13 @@
                 // Find the corresponding rule to get the original markdown (CERTORA_OUTPUT)
                 const rule = processedRules.find(r => r.outputFile === outputFile);
                 const originalContent = rule ? rule.markdown : '';
+                const skipFix = !!(document.getElementById(`skipfix-${outputFile}`)?.checked);
 
                 analyses.push({
                     text: val,
                     ruleName,
-                    content: originalContent  // Add original CERTORA_OUTPUT
+                    content: originalContent,  // Add original CERTORA_OUTPUT
+                    skipFix
                 });
             });
 
@@ -1532,7 +1625,7 @@
             window.ruleFixStatus = analyses.map((a, i) => ({
                 index: i + 1,
                 ruleName: a.ruleName || '(Unnamed Rule)',
-                status: 'Pending'
+                status: a.skipFix ? 'Skipped' : 'Pending'
             }));
             updateStatusDisplay();
 
@@ -1546,6 +1639,11 @@
 
                 const result = await response.json();
                 if (result.success) {
+                    if (!result.prompt || result.prompt.trim() === '') {
+                        const skippedCount = (window.ruleFixStatus || []).filter(x => x.status === 'Skipped').length;
+                        showStatus(result.message || `No items to fix. Skipped: ${skippedCount}`, 'info');
+                        return;
+                    }
                     // Execute fix directly; no preview modal
                     executeFixDirectly(result.prompt);
                 } else {
@@ -1553,6 +1651,88 @@
                 }
             } catch (error) {
                 showStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Resume fix from the first non-completed/non-skipped item
+        async function resumeFixFromUI() {
+            if (!Array.isArray(lastFixAnalyses) || lastFixAnalyses.length === 0) {
+                showStatus('No previous fix context to resume. Please run Execute sequential fix first.', 'error');
+                return;
+            }
+
+            // Determine start index from UI status
+            const statuses = window.ruleFixStatus || [];
+            let startIndex = 0;
+            for (let i = 0; i < statuses.length; i++) {
+                const s = statuses[i]?.status;
+                if (s !== 'Completed' && s !== 'Skipped') { startIndex = i; break; }
+                if (i === statuses.length - 1) { startIndex = statuses.length; }
+            }
+            if (startIndex >= statuses.length) {
+                showStatus('Nothing to resume. All items Completed or Skipped.', 'info');
+                return;
+            }
+
+            const projectPath = (document.getElementById('project-path-main')?.value || '').trim();
+            const confPath = (
+                document.getElementById('certora-conf-select')?.value ||
+                document.getElementById('certora-conf-path')?.value ||
+                ''
+            ).trim();
+
+            // Generate base prompt again for consistency
+            try {
+                const response = await fetch('http://localhost:3002/generate-fix-prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ analyses: lastFixAnalyses })
+                });
+                const result = await response.json();
+                if (!result.success) throw new Error(result.error || 'Generate prompt failed');
+
+                // Show main output area
+                document.getElementById('main-fix-output').style.display = 'block';
+                document.getElementById('main-fix-content').textContent = '';
+                document.getElementById('main-verification-url').style.display = 'none';
+                document.getElementById('main-fix-controls').style.display = 'block';
+
+                const requestBody = {
+                    basePrompt: result.prompt,
+                    analyses: lastFixAnalyses,
+                    startIndex,
+                    immediateStreaming: true
+                };
+                if (projectPath) requestBody.projectPath = projectPath;
+                if (confPath) requestBody.confPath = confPath;
+
+                fixAbortController = new AbortController();
+
+                const resp = await fetch('http://localhost:3002/resume-fix-from', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody),
+                    signal: fixAbortController.signal
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try { handleMainFixStreamData(JSON.parse(line.slice(6))); } catch {}
+                        }
+                    }
+                }
+            } catch (e) {
+                showStatus(`Resume error: ${e.message}`, 'error');
             }
         }
 
@@ -1602,7 +1782,7 @@
                 const response = await fetch('http://localhost:3002/fix-sequential-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody),
+                    body: JSON.stringify({ ...requestBody, immediateStreaming: true }),
                     signal: fixAbortController.signal
                 });
 
@@ -1689,7 +1869,7 @@
                 const response = await fetch('http://localhost:3002/fix-sequential-stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody),
+                    body: JSON.stringify({ ...requestBody, immediateStreaming: true }),
                     signal: fixAbortController.signal
                 });
 
@@ -1849,6 +2029,24 @@
                     }
                 }
             }
+
+            // Detect skip patterns
+            const skipPatterns = [
+                /⏭️\s*skipping\s+(\d+)\/(\d+)/i,
+                /\[skip\]\s*(\d+)\/(\d+)/i,
+            ];
+
+            for (const pattern of skipPatterns) {
+                const match = message.match(pattern);
+                if (match) {
+                    const index = parseInt(match[1]) - 1;
+                    if (window.ruleFixStatus[index]) {
+                        window.ruleFixStatus[index].status = 'Skipped';
+                        updateStatusDisplay();
+                        return;
+                    }
+                }
+            }
         }
 
         // Update status display with better visual feedback and real-time updates
@@ -1872,6 +2070,10 @@
                     statusColor = '#dc3545'; // red
                     statusIcon = '❌'; // X icon
                     statusBg = '#f8d7da'; // light red background
+                } else if (item.status === 'Skipped') {
+                    statusColor = '#6c757d';
+                    statusIcon = '⏭️';
+                    statusBg = '#f1f3f5';
                 }
 
                 return `<div style="margin: 8px 0; padding: 8px 12px; border-radius: 8px; background: ${statusBg}; border-left: 4px solid ${statusColor}; transition: all 0.3s ease;">
@@ -1896,6 +2098,7 @@
             const inProgressItems = progressSummary['In progress'] || 0;
             const failedItems = progressSummary['Failed'] || 0;
             const pendingItems = progressSummary['Pending'] || 0;
+            const skippedItems = progressSummary['Skipped'] || 0;
 
             const summaryHtml = `
                 <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #dee2e6;">
@@ -1904,6 +2107,7 @@
                         <span style="color: #ffc107;">⚙️ In Progress: <strong>${inProgressItems}</strong></span>
                         <span style="color: #dc3545;">❌ Failed: <strong>${failedItems}</strong></span>
                         <span style="color: #6c757d;">⏳ Pending: <strong>${pendingItems}</strong></span>
+                        <span style="color: #6c757d;">⏭️ Skipped: <strong>${skippedItems}</strong></span>
                     </div>
                     <div style="margin-top: 8px;">
                         <div style="background: #e9ecef; height: 8px; border-radius: 4px; overflow: hidden;">

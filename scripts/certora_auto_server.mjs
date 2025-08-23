@@ -22,6 +22,9 @@ let activeFixRunning = false;
 let currentFixIndex = 0;
 let resumeState = null;
 
+// In-memory skip status store: ruleName -> boolean (optional, updated via API)
+const skipStatusMap = Object.create(null);
+
 // Process Codex output, extract only the final answer
 function extractCodexAnswer(fullOutput) {
     // Trace back from the last "tokens used:" to find the most recent non-empty candidate block
@@ -203,13 +206,15 @@ app.post('/analyze-and-fetch-stream', async (req, res) => {
     // Set SSE response headers
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': 'Cache-Control',
         // Hint reverse proxies not to buffer SSE
         'X-Accel-Buffering': 'no'
     });
+    if (typeof res.setMaxListeners === 'function') { try { res.setMaxListeners(0); } catch { } }
+    if (typeof res.flushHeaders === 'function') { try { res.flushHeaders(); } catch { } }
 
     // Low-overhead SSE writer with simple backpressure support
     // Registered streams (stdout/stderr) will be paused on backpressure and resumed on drain
@@ -486,11 +491,14 @@ app.post('/analyze-rule-stream', async (req, res) => {
     // Set SSE response headers
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control'
+        'Access-Control-Allow-Headers': 'Cache-Control',
+        'X-Accel-Buffering': 'no'
     });
+    if (typeof res.setMaxListeners === 'function') { try { res.setMaxListeners(0); } catch { } }
+    if (typeof res.flushHeaders === 'function') { try { res.flushHeaders(); } catch { } }
 
     // Backpressure-aware SSE helpers (mirrors analyze-and-fetch-stream)
     const registeredStreams = new Set();
@@ -515,6 +523,7 @@ app.post('/analyze-rule-stream', async (req, res) => {
     const FLUSH_CHUNK_BYTES = 12 * 1024; // 12KB
     const sseBuffers = { info: '', output: '', error: '' };
     let sseTimer = null;
+
     const flushSSE = (force = false) => {
         if (!force && sseTimer) return; // already scheduled
         const doFlush = () => {
@@ -576,12 +585,14 @@ app.post('/analyze-rule-stream', async (req, res) => {
             promptText = `Analyze the following Certora rule violation from CERTORA_OUTPUT and propose minimal, sound SPEC/CONF change suggestions . If necessary, also propose changes to the HARNESS CONTRACTS .THINK HARDER,ULTRAL THINK.
 
 Output:
-- Classification: real bug vs false positive (e.g., unreachable initial state, missing preconditions, over-broad summaries, env mismatch).
-- Detalied summary: what failed and where (rule, method, invariant).
-- Fixes Suggestions: concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions(e.g., requireInvariant,  method filters, new ghost).
+- Classification: real bug vs false positive.
+- Detalied summary: what & where & how & why.
+- Fixes Suggestions: concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions.IT MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
 
 Constraints:
-- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
+- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
+- THE PROVIDED SOLUTIONS, ADHERING TO BEST PRACTICES, SHOULD NOT EXCEED TWO.
+- THE SYNTAX USED IN THE FIX SUGGESTIONS MUST BE CORRECT AND UP-TO-DATE. YOU MUST REFERENCE THE OFFICIAL DOCUMENTATION (DOCS.CERTORA.COM/EN/LATEST/) TO ENSURE THE SYNTAX IS ACCURATE AND COMPLIES WITH BEST PRACTICES.
 
 You have the ability to search the web to get any necessary information.
 
@@ -593,10 +604,13 @@ ${content}
 
 Output:
 - Summary: whether this rule is meaningful and if it should be deleted or fixed
-- IF meaningful and should be fixed: propose concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions(e.g., method filters, require).
+- IF meaningful and should be fixed: propose concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions.IT MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
+
 
 Constraints:
-- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
+- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
+- THE PROVIDED SOLUTIONS, ADHERING TO BEST PRACTICES, SHOULD NOT EXCEED TWO.
+- THE SYNTAX USED IN THE FIX SUGGESTIONS MUST BE CORRECT AND UP-TO-DATE. YOU MUST REFERENCE THE OFFICIAL DOCUMENTATION (DOCS.CERTORA.COM/EN/LATEST/) TO ENSURE THE SYNTAX IS ACCURATE AND COMPLIES WITH BEST PRACTICES.
 
 You have the ability to search the web to get any necessary information.
 
@@ -621,8 +635,8 @@ ${content}`;
         const codexArgs = [
             'exec',
             '--sandbox', 'read-only',
-            '-c', 'model_providers.packycode.request_max_retries=100',
-            '-c', 'model_providers.packycode.stream_max_retries=100',
+            '-c', 'model_providers.packycode.request_max_retries=20',
+            '-c', 'model_providers.packycode.stream_max_retries=20',
             '-c', 'approval_policy=never',
             '-c', 'model_reasoning_effort=high',
             '-c', 'model_reasoning_summary=detailed'
@@ -728,27 +742,39 @@ ${content}`;
         });
 
         analyzeCodexProcess.on('close', (code) => {
-            // Flush any remaining buffered output
-            if (bufferTimer) clearTimeout(bufferTimer);
-            flushBuffer();
-            // Ensure all buffered SSE chunks are flushed before final events
-            flushSSE(true);
-
             console.log(`Codex process ended, exit code: ${code}`);
+
+            // Clear all timers and buffers without flushing
+            if (bufferTimer) {
+                clearTimeout(bufferTimer);
+                bufferTimer = null;
+            }
+            if (sseTimer) {
+                clearTimeout(sseTimer);
+                sseTimer = null;
+            }
+
+            // Clear buffers without sending them
+            outputBuffer = '';
+            for (const key in sseBuffers) {
+                sseBuffers[key] = '';
+            }
+
+            // Send final result immediately
             if (code === 0 && !hasError) {
                 // Extract final analysis and output only at the end
                 const tailForParse = tailChunks.join('');
                 const finalResult = extractCodexAnswer(tailForParse);
-                // Flush before final message to keep ordering sensible
-                flushSSE(true);
+
+                // Send extracted final answer directly
                 writeSSE({ type: 'final', message: finalResult });
                 writeSSE({ type: 'success', message: 'Analysis complete' });
             } else {
                 const errorMsg = `Process exited abnormally, code: ${code}`;
                 console.error('Codex execution error:', errorMsg);
-                sendProgress(errorMsg, 'error');
+                writeSSE({ type: 'error', message: errorMsg });
             }
-            flushSSE(true);
+
             writeSSE({ type: 'complete' });
             res.end();
         });
@@ -776,19 +802,30 @@ app.post('/generate-fix-prompt', async (req, res) => {
     // Removed 'Generating fix prompt' log since we now do individual fixes
 
     try {
-        // Normalize input: support string array or object array { text, ruleName }
+        // Normalize input: support string array or object array { text, ruleName, skipFix }
         const items = analyses.map((a) => {
             if (a && typeof a === 'object') {
                 // Support different field names
                 const text = a.text ?? a.analysis ?? '';
                 const ruleName = a.ruleName ?? a.name ?? a.rule ?? '';
-                return { text: String(text || ''), ruleName: String(ruleName || '') };
+                const skipFix = Boolean(a.skipFix) || Boolean(skipStatusMap[String(ruleName || '')]);
+                return { text: String(text || ''), ruleName: String(ruleName || ''), skipFix };
             }
-            return { text: String(a || ''), ruleName: '' };
+            return { text: String(a || ''), ruleName: '', skipFix: false };
         });
 
+        // Filter out items marked as skipFix
+        const itemsToFix = items.filter(item => !item.skipFix);
+        if (itemsToFix.length === 0) {
+            return res.json({
+                success: true,
+                prompt: '',
+                message: 'No items to fix (all marked as skip)'
+            });
+        }
+
         // Format analyses (inject rule name into header)
-        const formattedAnalyses = items.map((item, index) => {
+        const formattedAnalyses = itemsToFix.map((item, index) => {
             const headerTitle = item.ruleName
                 ? `Analysis Conclusion ${index + 1} · Rule: ${item.ruleName}`
                 : `Analysis Conclusion ${index + 1}`;
@@ -802,17 +839,19 @@ ${item.text}
 ╚═══════════════════════════════════════════════════════════════════════════════════╝`;
         });
 
-        const promptText = `Implement fixes for the items below by editing SPEC/CONF/HARNESS CONTRACTS only:
+        const promptText = `Implement fixes for the item below by editing SPEC/CONF/HARNESS CONTRACTS only:
 
-        Constraints:
-- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE.
+Constraints:
+- THE OVERRIDING PRINCIPLE FOR ALL FIXES MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
+- FOR ANY GIVEN SOLUTION, YOU MUST CHALLENGE IT ON THE FOLLOWING CRITERIA:IS IT CORRECT IN SOLVING THE PROBLEM? DOES IT COMPLY WITH THE BEST PRACTICES FOR FORMAL VERIFICATION USING CERTORA CVL?
+- - THE SYNTAX USED IN THE FIX MUST BE CORRECT AND UP-TO-DATE. YOU MUST REFERENCE THE OFFICIAL DOCUMENTATION (DOCS.CERTORA.COM/EN/LATEST/) TO ENSURE THE SYNTAX IS ACCURATE AND COMPLIES WITH BEST PRACTICES.
 - NEVER MODIFY any Solidity files (.sol) in the following directories: src/, contract/, contracts/.
 - You MAY ONLY modify CVL specification files (.spec) , Certora configuration files (.conf) , HARNESS CONTRACTS (.sol) in the following directories: certora/harness when necessary.
 - DO NOT RUN certoraRun command yourself
 
 You have the ability to search the web to get any necessary information. 
 
-Implement fixes based on the following analysis result`;
+Initial analysis result`;
 
         res.json({
             success: true,
@@ -830,7 +869,7 @@ Implement fixes based on the following analysis result`;
 
 // New: resume fix from specific index
 app.post('/resume-fix-from', async (req, res) => {
-    const { content, startIndex, basePrompt, analyses, projectPath, confPath } = req.body || {};
+    const { content, startIndex, basePrompt, analyses, projectPath, confPath, immediateStreaming, lowLatency } = req.body || {};
 
     if (!analyses || !Array.isArray(analyses) || analyses.length === 0) {
         return res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({
@@ -850,24 +889,22 @@ app.post('/resume-fix-from', async (req, res) => {
     // Reuse the existing fix-sequential-stream logic with modified analyses array
     const remainingAnalyses = analyses.slice(startIdx);
 
-    // Forward to existing fix-sequential-stream endpoint with modified data
-    const modifiedReq = {
-        ...req,
-        body: {
-            content,
-            basePrompt,
-            analyses: remainingAnalyses,
-            projectPath,
-            confPath,
-            _resumeInfo: {
-                originalStartIndex: startIdx,
-                totalItems: analyses.length
-            }
-        }
+    // Mutate current req.body to preserve EventEmitter methods (req.on, etc.)
+    req.body = {
+        content,
+        basePrompt,
+        analyses: remainingAnalyses,
+        projectPath,
+        confPath,
+        _resumeInfo: {
+            originalStartIndex: startIdx,
+            totalItems: analyses.length
+        },
+        immediateStreaming: !!(immediateStreaming || lowLatency)
     };
 
-    // Call the existing fix-sequential-stream handler
-    return handleSequentialFix(modifiedReq, res);
+    // Call the existing fix-sequential-stream handler with original req/res
+    return handleSequentialFix(req, res);
 });
 
 // Extract the main logic to a reusable function
@@ -884,12 +921,13 @@ function handleSequentialFix(req, res) {
     // SSE headers
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': 'Cache-Control',
         'X-Accel-Buffering': 'no'
     });
+    if (typeof res.flushHeaders === 'function') try { res.flushHeaders(); } catch { }
 
     // Backpressure-aware SSE writer
     const registeredStreams = new Set();
@@ -908,11 +946,13 @@ function handleSequentialFix(req, res) {
     };
 
     // Throttled SSE batching to reduce event storms
-    const FLUSH_INTERVAL_MS = 300;
-    const FLUSH_CHUNK_BYTES = 12 * 1024;
+    const immediateStreaming = !!(req.body && (req.body.immediateStreaming || req.body.lowLatency));
+    const FLUSH_INTERVAL_MS = immediateStreaming ? 0 : 300;
+    const FLUSH_CHUNK_BYTES = immediateStreaming ? 1024 : 12 * 1024;
     const sseBuffers = { output: '', error: '', info: '', success: '', url: '' };
     let sseTimer = null;
     const flushSSE = (force = false) => {
+        if (FLUSH_INTERVAL_MS === 0) force = true;
         if (!force && sseTimer) return;
         const doFlush = () => {
             for (const t of Object.keys(sseBuffers)) {
@@ -931,7 +971,8 @@ function handleSequentialFix(req, res) {
         try {
             if (typeof message !== 'string') message = String(message ?? '');
             sseBuffers[type] = (sseBuffers[type] || '') + message;
-            if (Buffer.byteLength(sseBuffers[type], 'utf8') >= FLUSH_CHUNK_BYTES) flushSSE(true);
+            if (immediateStreaming) flushSSE(true);
+            else if (Buffer.byteLength(sseBuffers[type], 'utf8') >= FLUSH_CHUNK_BYTES) flushSSE(true);
             else flushSSE(false);
         } catch { }
     };
@@ -981,8 +1022,8 @@ function handleSequentialFix(req, res) {
             }
             const args = [
                 'exec',
-                '-c', 'model_providers.packycode.request_max_retries=100',
-                '-c', 'model_providers.packycode.stream_max_retries=100',
+                '-c', 'model_providers.packycode.request_max_retries=20',
+                '-c', 'model_providers.packycode.stream_max_retries=20',
                 '--sandbox', 'workspace-write',
                 '-c', 'approval_policy=never',
                 '-c', 'model_reasoning_effort=high',
@@ -1121,26 +1162,37 @@ ${String(promptText || '').replace(/\0/g, '')}`
                     const text = a.text ?? a.analysis ?? '';
                     const ruleName = a.ruleName ?? a.name ?? a.rule ?? `Item ${startIdx + i + 1}`;
                     const itemContent = a.content ?? a.ruleData ?? null; // This is the original CERTORA_OUTPUT
+                    const ruleType = a.ruleType ?? a.type ?? null;
+                    const skipFix = Boolean(a.skipFix) || Boolean(skipStatusMap[String(ruleName || '')]);
                     return {
                         text: String(text || ''),
                         ruleName: String(ruleName || `Item ${startIdx + i + 1}`),
                         content: itemContent,  // Keep individual rule's CERTORA_OUTPUT
-                        originalContent: itemContent  // Backup field name
+                        originalContent: itemContent,  // Backup field name
+                        ruleType: ruleType ? String(ruleType) : null,
+                        skipFix
                     };
                 }
                 return {
                     text: String(a || ''),
                     ruleName: `Item ${startIdx + i + 1}`,
                     content: null,
-                    originalContent: null
+                    originalContent: null,
+                    ruleType: null,
+                    skipFix: false
                 };
             });
 
             // Debug: log each item's rule name
             send(`📋 List of items to fix:`, 'info');
             items.forEach((item, index) => {
-                send(`  ${startIdx + index + 1}. ${item.ruleName}`, 'info');
+                const mark = item.skipFix ? ' [SKIP]' : '';
+                send(`  ${startIdx + index + 1}. ${item.ruleName}${mark}`, 'info');
             });
+
+            let successCount = 0;
+            let failureCount = 0;
+            let skippedCount = 0;
 
             // Fix items sequentially
             for (let i = 0; i < items.length; i++) {
@@ -1152,6 +1204,20 @@ ${String(promptText || '').replace(/\0/g, '')}`
                 const actualIndex = startIdx + i + 1;
                 currentFixIndex = startIdx + i;
                 resumeState.currentIndex = currentFixIndex;
+
+                // Check skip flag early
+                if (item.skipFix) {
+                    skippedCount++;
+                    flushSSE(true);
+                    send(`⏭️ Skipping ${actualIndex}/${totalItems}: ${item.ruleName} (marked as skip)`, 'info');
+                    send(`===== [Skip  ${actualIndex}/${totalItems}] ${item.ruleName} =====\n`, 'output');
+                    if (i + 1 < items.length) {
+                        flushSSE(true);
+                        send(`⏭️ Next ${startIdx + i + 2}/${totalItems}`, 'info');
+                        send(`⏭️ Next ${startIdx + i + 2}/${totalItems}\n`, 'output');
+                    }
+                    continue;
+                }
 
                 // Cleaner section headers
                 // Flush before sending info to avoid mixing with previous output
@@ -1204,10 +1270,12 @@ ${String(promptText || '').replace(/\0/g, '')}`
                         break;
                     }
                     send(`❌ Fix ${actualIndex} failed, continue to next`, 'error');
+                    failureCount++;
                     // continue to next item
                 } else {
                     flushSSE(true);  // Flush before success message
                     send(`✅ Fix ${actualIndex} completed`, 'success');
+                    successCount++;
                 }
                 if (i + 1 < items.length) {
                     flushSSE(true);  // Flush before next item
@@ -1218,6 +1286,10 @@ ${String(promptText || '').replace(/\0/g, '')}`
 
             send(`🏁 Fix loop finished, processed ${items.length} items`, 'info');
             send(`🏁 Fix loop finished, processed ${items.length} items\n`, 'output');
+
+            // Summary counts
+            send(`📊 Summary -> Success: ${successCount}, Skipped: ${skippedCount}, Failed: ${failureCount}`, 'info');
+            send(`📊 Summary -> Success: ${successCount}, Skipped: ${skippedCount}, Failed: ${failureCount}\n`, 'output');
 
             if (globalFixAbort) {
                 send('Sequential fix aborted by user', 'status');
@@ -1260,7 +1332,9 @@ ${String(promptText || '').replace(/\0/g, '')}`
                         const failurePrompt = `Resolve SPEC/CONF/HARNESS CONTRACTS  syntax/parse/compilation errors shown in the log tail by making the minimal edits required.
 
  Constraints:
+ - THE SYNTAX USED IN THE FIX MUST BE CORRECT AND UP-TO-DATE. YOU MUST REFERENCE THE OFFICIAL DOCUMENTATION (DOCS.CERTORA.COM/EN/LATEST/) TO ENSURE THE SYNTAX IS ACCURATE AND COMPLIES WITH BEST PRACTICES.
 - NEVER MODIFY any Solidity files (.sol) in the following directories: src/, contract/, contracts/.
+- ANY MODIFICATION TO THE SPEC/CONF MUST COMPLY WITH THE BEST PRACTICES FOR FORMAL VERIFICATION USING CERTORA CVL.
 - You MAY ONLY modify CVL specification files (.spec) , Certora configuration files (.conf) , HARNESS CONTRACTS (.sol) in the following directories: certora/harness when necessary.
 - DO NOT RUN certoraRun command yourself
 
@@ -1350,11 +1424,30 @@ app.post('/kill-processes', async (req, res) => {
     }
 });
 
+// Optional: update skip status for a rule dynamically
+app.post('/update-skip-status', (req, res) => {
+    try {
+        const { ruleName, skipFix } = req.body || {};
+        if (!ruleName || typeof ruleName !== 'string') {
+            return res.status(400).json({ success: false, error: 'Missing or invalid ruleName' });
+        }
+        const val = Boolean(skipFix);
+        skipStatusMap[ruleName] = val;
+        return res.json({ success: true, ruleName, skipFix: val });
+    } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 const PORT = 3002;
 const server = http.createServer(app);
+// Reduce TCP-level latency (disable Nagle)
+server.on('connection', (socket) => {
+    try { socket.setNoDelay(true); } catch { }
+});
 
 // Create WebSocket server
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, perMessageDeflate: false });
 
 // Store active analysis tasks: Map<taskId, {ws, process, ruleName}>
 const activeTasks = new Map();
@@ -1452,12 +1545,14 @@ async function handleWebSocketAnalysis(ws, data) {
             promptText = `Analyze the following Certora rule violation from CERTORA_OUTPUT and propose minimal, sound SPEC/CONF change suggestions . If necessary, also propose changes to the HARNESS CONTRACTS .THINK HARDER,ULTRAL THINK.
 
 Output:
-- Classification: real bug vs false positive (e.g., unreachable initial state, missing preconditions, over-broad summaries, env mismatch).
-- Detalied summary: what failed and where (rule, method, invariant).
-- Fixes Suggestions: concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions(e.g., requireInvariant,  method filters, new ghost).
+- Classification: real bug vs false positive.
+- Detalied summary: what & where & how & why.
+- Fixes Suggestions: concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions.IT MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
 
 Constraints:
-- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
+- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
+- THE PROVIDED SOLUTIONS, ADHERING TO BEST PRACTICES, SHOULD NOT EXCEED TWO.
+- THE SYNTAX USED IN THE FIX SUGGESTIONS MUST BE CORRECT AND UP-TO-DATE. YOU MUST REFERENCE THE OFFICIAL DOCUMENTATION (DOCS.CERTORA.COM/EN/LATEST/) TO ENSURE THE SYNTAX IS ACCURATE AND COMPLIES WITH BEST PRACTICES.
 
 You have the ability to search the web to get any necessary information.
 
@@ -1469,10 +1564,12 @@ ${content}
 
 Output:
 - Summary: whether this rule is meaningful and if it should be deleted or fixed
-- IF meaningful and should be fixed: propose concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions(e.g., method filters, require).
+- IF meaningful and should be fixed: propose concrete,minimal,SOUND  SPEC/CONF/HARNESS CONTRACTS change suggestions.IT MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
 
 Constraints:
-- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS IS TO PRESERVE SOUNDNESS. THIS IS NON-NEGOTIABLE.BASED ON THIS, THE HIERARCHY OF PREFERENCE FOR FIXES IS:REQUIREINVARIANT >> HAVOC ASSUMING>FILTERED = REQUIRE
+- THE OVERRIDING PRINCIPLE FOR ALL RECOMMENDATIONS MUST COMPLY WITH THE BEST PRACTICES AND SPECIFICATIONS FOR FORMAL VERIFICATION USING CERTORA CVL.
+- THE PROVIDED SOLUTIONS, ADHERING TO BEST PRACTICES, SHOULD NOT EXCEED TWO.
+- THE SYNTAX USED IN THE FIX SUGGESTIONS MUST BE CORRECT AND UP-TO-DATE. YOU MUST REFERENCE THE OFFICIAL DOCUMENTATION (DOCS.CERTORA.COM/EN/LATEST/) TO ENSURE THE SYNTAX IS ACCURATE AND COMPLIES WITH BEST PRACTICES.
 
 You have the ability to search the web to get any necessary information.
 
@@ -1493,8 +1590,8 @@ ${content}`;
         // Analysis phase: read-only sandbox + never approve + high reasoning effort + detailed summary
         const codexArgs = [
             'exec',
-            '-c', 'model_providers.packycode.request_max_retries=100',
-            '-c', 'model_providers.packycode.stream_max_retries=100',
+            '-c', 'model_providers.packycode.request_max_retries=20',
+            '-c', 'model_providers.packycode.stream_max_retries=20',
             '--sandbox', 'read-only',
             '-c', 'approval_policy=never',
             '-c', 'model_reasoning_effort=high',
@@ -1540,7 +1637,7 @@ ${content}`;
             const chunk = data.toString();
             appendTail(chunk);
 
-            // Send progress update
+            // Send progress update in real-time
             ws.send(JSON.stringify({
                 type: 'output',
                 id,
@@ -1568,10 +1665,11 @@ ${content}`;
             activeTasks.delete(taskId);
 
             if (code === 0) {
-                // Extract final answer
-                const fullOutput = tailChunks.join('');
-                const finalResult = extractCodexAnswer(fullOutput);
+                // Extract final answer from accumulated output
+                const fullOutputStr = tailChunks.join('');
+                const finalResult = extractCodexAnswer(fullOutputStr);
 
+                // Send final result immediately
                 ws.send(JSON.stringify({
                     type: 'complete',
                     id,
