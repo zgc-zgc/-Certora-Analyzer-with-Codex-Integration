@@ -1168,46 +1168,68 @@
                 });
             });
 
-            // 2) SANITY_FAILED: consolidate by base rule name (before first ' > ') with detailed info
-            const sanityGroups = new Map(); // baseName -> array of rules
-            data.rules.filter(r => r.status === 'SANITY_FAILED').forEach(rule => {
-                const base = (rule.ruleName || '').split(' > ')[0].trim() || '(Unnamed)';
-                if (!sanityGroups.has(base)) {
-                    sanityGroups.set(base, []);
+            // 2) SANITY_FAILED: group by base rule name, but only include leaf nodes
+            const allSanityRules = data.rules.filter(r => r.status === 'SANITY_FAILED');
+            
+            // First, identify leaf nodes (rules that are not prefixes of other rules)
+            const leafRules = allSanityRules.filter(rule => {
+                const ruleName = rule.ruleName || '';
+                // Check if this rule is a prefix of any other rule
+                const isPrefix = allSanityRules.some(other => {
+                    const otherName = other.ruleName || '';
+                    return otherName !== ruleName && otherName.startsWith(ruleName + ' > ');
+                });
+                return !isPrefix; // Only keep if not a prefix (i.e., is a leaf)
+            });
+            
+            // Then group the leaf rules by base name
+            const sanityGroups = new Map();
+            leafRules.forEach(rule => {
+                const ruleName = rule.ruleName || '(Unnamed)';
+                
+                // Get base rule name (everything before first ' > ')
+                const baseRuleName = ruleName.split(' > ')[0].trim();
+                
+                if (!sanityGroups.has(baseRuleName)) {
+                    sanityGroups.set(baseRuleName, []);
                 }
-                sanityGroups.get(base).push(rule);
+                sanityGroups.get(baseRuleName).push(rule);
             });
 
-            const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'group';
-
-            for (const [baseName, items] of sanityGroups.entries()) {
-                if (!items || items.length === 0) continue;
-                // Build detailed display name with count and subrule tails
-                const subTails = items.map(it => {
-                    const parts = String(it.ruleName || '').split(' > ');
-                    return parts[parts.length - 1] || parts[0] || '';
-                }).filter(Boolean);
-                const preview = subTails.slice(0, 5).join(', ') + (subTails.length > 5 ? ', ...' : '');
-
-                // Build consolidated object (synthetic outputFile keeps row unique)
-                const consolidated = {
-                    ...items[0],
-                    ruleName: baseName,
-                    outputFile: `sanity_group_${slugify(baseName)}`,
-                    status: 'SANITY_FAILED'
-                };
-
-                // Build group markdown aggregating all items
-                const markdown = buildSanityGroupMarkdown(baseName, items);
-                processedRules.push({
-                    ...consolidated,
-                    type: 'SANITY_FAILED',
-                    markdown: markdown,
-                    displayName: `${baseName} (${items.length}) - ${preview}`,
-                    skipFix: false,
-                    _groupSize: items.length
-                });
-            }
+            // Process each group
+            sanityGroups.forEach((items, baseRuleName) => {
+                if (items.length === 1 && items[0].ruleName === baseRuleName) {
+                    // Single rule with no sub-paths
+                    const rule = items[0];
+                    const markdown = rule.content ? convertToMarkdown(rule) : '';
+                    processedRules.push({
+                        ...rule,
+                        type: 'SANITY_FAILED',
+                        markdown: markdown,
+                        displayName: rule.ruleName,
+                        skipFix: false
+                    });
+                } else {
+                    // Multiple sub-rules under same base rule - merge them
+                    const consolidated = {
+                        ...items[0],
+                        ruleName: baseRuleName,
+                        outputFile: `sanity_group_${baseRuleName.replace(/[^a-zA-Z0-9]/g, '_')}`,
+                        status: 'SANITY_FAILED'
+                    };
+                    
+                    // Build merged markdown
+                    const markdown = buildMergedSanityMarkdown(baseRuleName, items);
+                    processedRules.push({
+                        ...consolidated,
+                        type: 'SANITY_FAILED',
+                        markdown: markdown,
+                        displayName: `${baseRuleName} (${items.length} sub-rules)`,
+                        skipFix: false,
+                        _groupSize: items.length
+                    });
+                }
+            });
 
             displayResults();
             document.getElementById('action-buttons').style.display = 'flex';
@@ -1285,7 +1307,7 @@
                 else if (rule.type === 'SANITY_FAILED') sanity.push({ rule, idx });
             });
 
-            // Render all items directly (SANITY_FAILED already consolidated)
+            // Render all items directly (each rule is handled individually)
             processedRules.forEach((rule, idx) => renderRuleRow(rule, idx));
 
             document.getElementById('result-section').style.display = 'block';
@@ -2337,79 +2359,71 @@
             return md;
         }
 
-        // Build a consolidated Markdown for SANITY_FAILED groups (single-level sections)
-        function buildSanityGroupMarkdown(baseName, items) {
+        // Build merged markdown for SANITY_FAILED rules under same base rule
+        function buildMergedSanityMarkdown(baseRuleName, items) {
             // Header
-            let md = `# Certora Trace Analysis (SANITY_FAILED Group)\n\n`;
-            md += `**Rule:** ${formatRuleName(baseName)}\n`;
-            md += `**Status:** SANITY_FAILED (Grouped, ${items.length} items)\n\n`;
+            let md = `# Certora Trace Analysis (SANITY_FAILED)\n\n`;
+            md += `**Rule:** ${formatRuleName(baseRuleName)}\n`;
+            md += `**Status:** SANITY_FAILED (${items.length} sub-rules)\n\n`;
 
-            const indentBlock = (text, pad = '  ') => String(text || '')
-                .split('\n')
-                .map(line => (line ? pad + line : line))
-                .join('\n');
-
-            // Unified Call Trace section (no per-subrule headers)
+            // Call Trace section - show each sub-rule
             md += `## 🌳 Call Trace\n\n`;
-            items.forEach((it) => {
-                if (!it || !it.content) return;
-                const traceData = it.content;
-                const title = formatRuleName(it.ruleName || baseName);
-                md += `- ${title}\n`;
+            
+            items.forEach((item, index) => {
+                if (!item || !item.content) return;
+                
+                const traceData = item.content;
+                const fullRuleName = item.ruleName || baseRuleName;
+                
+                // Show sub-path as header (remove base rule name since it's already in the main title)
+                const subPath = fullRuleName.split(' > ').slice(1).join(' > ') || fullRuleName;
+                md += `### ${subPath}\n\n`;
+                
+                // Add the trace directly
                 if (traceData.callTrace) {
                     let globalStateCounter = 1;
                     const traceMd = convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
-                    md += indentBlock(traceMd) + `\n`;
+                    md += traceMd + `\n\n`;
                 }
-            });
-            md += `\n`;
-
-            // Unified Global State Diff section (final vs initial per subrule)
-            md += `## 🔄 Global State Diff\n\n`;
-            items.forEach((it) => {
-                if (!it || !it.content) return;
-                const title = formatRuleName(it.ruleName || baseName);
-                const gsInfo = calculateGlobalStateSnapshotsWithLabels(it.content.callTrace);
-                if (gsInfo && Array.isArray(gsInfo.snapshots) && gsInfo.snapshots.length > 1) {
-                    const firstState = gsInfo.snapshots[0];
-                    const lastState = gsInfo.snapshots[gsInfo.snapshots.length - 1];
-                    const diff = {};
-                    const keys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
-                    keys.forEach(k => {
-                        const a = firstState[k];
-                        const b = lastState[k];
-                        if (a !== b) diff[k] = { from: a ?? 'undefined', to: b ?? 'undefined', changed: true };
-                    });
-                    if (Object.keys(diff).length > 0) {
-                        const locMap = calculateFirstChangeLocations(gsInfo.snapshots, gsInfo.labels);
-                        md += `- ${title}\n` + indentBlock(renderGlobalStateDiffWithLocation(diff, locMap)) + `\n`;
-                    }
+                
+                // Add variables if present
+                if (traceData.variables && Array.isArray(traceData.variables) && traceData.variables.length > 0) {
+                    md += `**Variables:**\n`;
+                    md += renderVariablesFromArray(traceData.variables);
+                    md += `\n`;
+                }
+                
+                // Add separator between sub-rules if not the last one
+                if (index < items.length - 1) {
+                    md += `---\n\n`;
                 }
             });
 
-            // Unified Warnings section
-            let anyWarn = false;
-            items.forEach((it) => {
-                if (it && it.content && it.content.callResolutionWarnings && it.content.callResolutionWarnings.length > 0) {
-                    anyWarn = true;
-                }
-            });
-            if (anyWarn) {
+            // Warnings section if any
+            let hasWarnings = items.some(item => 
+                item && item.content && item.content.callResolutionWarnings && 
+                item.content.callResolutionWarnings.length > 0
+            );
+            
+            if (hasWarnings) {
                 md += `\n## 🚨 Call Resolution Warnings\n\n`;
-                items.forEach((it) => {
-                    if (!it || !it.content) return;
-                    const title = formatRuleName(it.ruleName || baseName);
-                    const warnings = it.content.callResolutionWarnings || [];
+                items.forEach((item) => {
+                    if (!item || !item.content || !item.content.callResolutionWarnings) return;
+                    
+                    const fullRuleName = item.ruleName || baseRuleName;
+                    const warnings = item.content.callResolutionWarnings;
+                    
                     warnings.forEach((warning) => {
                         const parts = [];
+                        // Use sub-path for warnings too
+                        const subPath = fullRuleName.split(' > ').slice(1).join(' > ') || fullRuleName;
+                        parts.push(subPath);
                         if (warning.caller) parts.push(`Caller: ${warning.caller.name || 'Unknown'}`);
                         if (warning.callee) parts.push(`Callee: ${warning.callee.name || 'Unknown'}`);
                         if (warning.summary) parts.push(`Summary: ${warning.summary}`);
-                        if (warning.callSite && warning.callSite.snippet) parts.push(`Call Site: ${warning.callSite.snippet}`);
-                        md += `- ${title} | ${parts.join(' | ')}\n`;
+                        md += `- ${parts.join(' | ')}\n`;
                     });
                 });
-                md += `\n`;
             }
 
             return md;
