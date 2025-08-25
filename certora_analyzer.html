@@ -162,6 +162,17 @@
             background: #f8f9fa;
         }
 
+        /* Group header for SANITY_FAILED grouping */
+        .group-header {
+            background: #fff3cd;
+            color: #8a6d3b;
+            font-weight: 600;
+        }
+        .group-header td {
+            border-top: 2px solid #ffeeba;
+            border-bottom: 1px solid #ffeeba;
+        }
+
         .status-badge {
             display: inline-block;
             padding: 4px 12px;
@@ -1145,7 +1156,7 @@
         function processData(data) {
             processedRules = [];
 
-            // Process VIOLATED rules
+            // 1) VIOLATED: keep as-is
             data.rules.filter(r => r.status === 'VIOLATED').forEach(rule => {
                 const markdown = rule.content ? convertToMarkdown(rule) : '';
                 processedRules.push({
@@ -1157,17 +1168,46 @@
                 });
             });
 
-            // Process SANITY_FAILED rules individually (like VIOLATED rules)
+            // 2) SANITY_FAILED: consolidate by base rule name (before first ' > ') with detailed info
+            const sanityGroups = new Map(); // baseName -> array of rules
             data.rules.filter(r => r.status === 'SANITY_FAILED').forEach(rule => {
-                const markdown = rule.content ? convertToMarkdown(rule) : '';
+                const base = (rule.ruleName || '').split(' > ')[0].trim() || '(Unnamed)';
+                if (!sanityGroups.has(base)) {
+                    sanityGroups.set(base, []);
+                }
+                sanityGroups.get(base).push(rule);
+            });
+
+            const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'group';
+
+            for (const [baseName, items] of sanityGroups.entries()) {
+                if (!items || items.length === 0) continue;
+                // Build detailed display name with count and subrule tails
+                const subTails = items.map(it => {
+                    const parts = String(it.ruleName || '').split(' > ');
+                    return parts[parts.length - 1] || parts[0] || '';
+                }).filter(Boolean);
+                const preview = subTails.slice(0, 5).join(', ') + (subTails.length > 5 ? ', ...' : '');
+
+                // Build consolidated object (synthetic outputFile keeps row unique)
+                const consolidated = {
+                    ...items[0],
+                    ruleName: baseName,
+                    outputFile: `sanity_group_${slugify(baseName)}`,
+                    status: 'SANITY_FAILED'
+                };
+
+                // Build group markdown aggregating all items
+                const markdown = buildSanityGroupMarkdown(baseName, items);
                 processedRules.push({
-                    ...rule,
+                    ...consolidated,
                     type: 'SANITY_FAILED',
                     markdown: markdown,
-                    displayName: rule.ruleName,
-                    skipFix: false
+                    displayName: `${baseName} (${items.length}) - ${preview}`,
+                    skipFix: false,
+                    _groupSize: items.length
                 });
-            });
+            }
 
             displayResults();
             document.getElementById('action-buttons').style.display = 'flex';
@@ -1177,7 +1217,8 @@
             const tbody = document.getElementById('result-tbody');
             tbody.innerHTML = '';
 
-            processedRules.forEach((rule, index) => {
+            // Helper to render a single rule row
+            const renderRuleRow = (rule, index) => {
                 const row = document.createElement('tr');
                 row.id = `row-${rule.outputFile}`;
                 const ruleNameCell = `<span id="rule-name-${rule.outputFile}" class="${(rule.skipFix && rule.type === 'VIOLATED') ? 'skipped-rule' : ''}">${formatRuleName(rule.displayName)}</span>`;
@@ -1230,12 +1271,22 @@
                     </td>
                 `;
                 tbody.appendChild(row);
-                // Apply initial skip styling if needed
                 if (rule.skipFix && rule.type === 'VIOLATED') {
                     try { document.getElementById(`row-${rule.outputFile}`).style.opacity = '0.65'; } catch {}
                     try { document.getElementById(`rule-name-${rule.outputFile}`).classList.add('skipped-rule'); } catch {}
                 }
+            };
+
+            // Separate rules
+            const violated = [];
+            const sanity = [];
+            processedRules.forEach((rule, idx) => {
+                if (rule.type === 'VIOLATED') violated.push({ rule, idx });
+                else if (rule.type === 'SANITY_FAILED') sanity.push({ rule, idx });
             });
+
+            // Render all items directly (SANITY_FAILED already consolidated)
+            processedRules.forEach((rule, idx) => renderRuleRow(rule, idx));
 
             document.getElementById('result-section').style.display = 'block';
         }
@@ -2207,16 +2258,18 @@
         // convertToMarkdown function (rewritten based on reference project)
         function convertToMarkdown(rule) {
             const traceData = rule.content;
-            const simplifiedRuleName = rule.ruleName.split('↳')[0].trim();
+            // Title uses truncated style "A > ... > Z" (preference B)
+            const headerRuleName = formatRuleName(rule.ruleName);
             let md = `# Certora Trace Analysis\n\n`;
-            md += `**Rule:** ${simplifiedRuleName}\n`;
+            md += `**Rule:** ${headerRuleName}\n`;
             md += `**Status:** ${rule.status}\n\n`;
 
             // 1. Call Trace (first position)
             if (traceData.callTrace) {
                 md += `## 🌳 Call Trace\n\n`;
                 let globalStateCounter = 1;
-                md += convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
+                // Track last global state snapshot to show inline diffs at GS nodes
+                md += convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter, lastGS: null });
             }
 
             // 2. Variables (second) - from variables array
@@ -2227,11 +2280,23 @@
                 md += `No variable data\n\n`;
             }
 
-            // 3. Global State Diff (third) - compute from Call Trace Global State nodes
-            const globalStateDiff = calculateGlobalStateDiff(traceData.callTrace);
-            if (Object.keys(globalStateDiff).length > 0) {
-                md += `## 🔄 Global State Diff\n\n`;
-                md += renderGlobalStateDiff(globalStateDiff);
+            // 3. Global State Diff (third): only final vs initial snapshot with change locations
+            const gsInfo = calculateGlobalStateSnapshotsWithLabels(traceData.callTrace);
+            if (gsInfo && Array.isArray(gsInfo.snapshots) && gsInfo.snapshots.length > 1) {
+                const firstState = gsInfo.snapshots[0];
+                const lastState = gsInfo.snapshots[gsInfo.snapshots.length - 1];
+                const finalDiff = {};
+                const keys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
+                keys.forEach(k => {
+                    const a = firstState[k];
+                    const b = lastState[k];
+                    if (a !== b) finalDiff[k] = { from: a ?? 'undefined', to: b ?? 'undefined', changed: true };
+                });
+                if (Object.keys(finalDiff).length > 0) {
+                    const locMap = calculateFirstChangeLocations(gsInfo.snapshots, gsInfo.labels);
+                    md += `## 🔄 Global State Diff\n\n`;
+                    md += renderGlobalStateDiffWithLocation(finalDiff, locMap);
+                }
             }
 
             // 4. Call Resolution Warnings (last position)
@@ -2272,8 +2337,86 @@
             return md;
         }
 
-        // Call Trace conversion - reference implementation
-        function convertTraceToMarkdown(node, level, context = { counter: 1 }) {
+        // Build a consolidated Markdown for SANITY_FAILED groups (single-level sections)
+        function buildSanityGroupMarkdown(baseName, items) {
+            // Header
+            let md = `# Certora Trace Analysis (SANITY_FAILED Group)\n\n`;
+            md += `**Rule:** ${formatRuleName(baseName)}\n`;
+            md += `**Status:** SANITY_FAILED (Grouped, ${items.length} items)\n\n`;
+
+            const indentBlock = (text, pad = '  ') => String(text || '')
+                .split('\n')
+                .map(line => (line ? pad + line : line))
+                .join('\n');
+
+            // Unified Call Trace section (no per-subrule headers)
+            md += `## 🌳 Call Trace\n\n`;
+            items.forEach((it) => {
+                if (!it || !it.content) return;
+                const traceData = it.content;
+                const title = formatRuleName(it.ruleName || baseName);
+                md += `- ${title}\n`;
+                if (traceData.callTrace) {
+                    let globalStateCounter = 1;
+                    const traceMd = convertTraceToMarkdown(traceData.callTrace, 0, { counter: globalStateCounter });
+                    md += indentBlock(traceMd) + `\n`;
+                }
+            });
+            md += `\n`;
+
+            // Unified Global State Diff section (final vs initial per subrule)
+            md += `## 🔄 Global State Diff\n\n`;
+            items.forEach((it) => {
+                if (!it || !it.content) return;
+                const title = formatRuleName(it.ruleName || baseName);
+                const gsInfo = calculateGlobalStateSnapshotsWithLabels(it.content.callTrace);
+                if (gsInfo && Array.isArray(gsInfo.snapshots) && gsInfo.snapshots.length > 1) {
+                    const firstState = gsInfo.snapshots[0];
+                    const lastState = gsInfo.snapshots[gsInfo.snapshots.length - 1];
+                    const diff = {};
+                    const keys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
+                    keys.forEach(k => {
+                        const a = firstState[k];
+                        const b = lastState[k];
+                        if (a !== b) diff[k] = { from: a ?? 'undefined', to: b ?? 'undefined', changed: true };
+                    });
+                    if (Object.keys(diff).length > 0) {
+                        const locMap = calculateFirstChangeLocations(gsInfo.snapshots, gsInfo.labels);
+                        md += `- ${title}\n` + indentBlock(renderGlobalStateDiffWithLocation(diff, locMap)) + `\n`;
+                    }
+                }
+            });
+
+            // Unified Warnings section
+            let anyWarn = false;
+            items.forEach((it) => {
+                if (it && it.content && it.content.callResolutionWarnings && it.content.callResolutionWarnings.length > 0) {
+                    anyWarn = true;
+                }
+            });
+            if (anyWarn) {
+                md += `\n## 🚨 Call Resolution Warnings\n\n`;
+                items.forEach((it) => {
+                    if (!it || !it.content) return;
+                    const title = formatRuleName(it.ruleName || baseName);
+                    const warnings = it.content.callResolutionWarnings || [];
+                    warnings.forEach((warning) => {
+                        const parts = [];
+                        if (warning.caller) parts.push(`Caller: ${warning.caller.name || 'Unknown'}`);
+                        if (warning.callee) parts.push(`Callee: ${warning.callee.name || 'Unknown'}`);
+                        if (warning.summary) parts.push(`Summary: ${warning.summary}`);
+                        if (warning.callSite && warning.callSite.snippet) parts.push(`Call Site: ${warning.callSite.snippet}`);
+                        md += `- ${title} | ${parts.join(' | ')}\n`;
+                    });
+                });
+                md += `\n`;
+            }
+
+            return md;
+        }
+
+        // Call Trace conversion - show inline Global State changes at GS nodes
+        function convertTraceToMarkdown(node, level, context = { counter: 1, lastGS: null }) {
             const indent = '  '.repeat(level);
             let md = '';
 
@@ -2300,7 +2443,8 @@
                 });
             }
 
-            if (messageText === 'Global State') {
+            const isGlobalStateNode = messageText === 'Global State';
+            if (isGlobalStateNode) {
                 messageText = `Global State #${context.counter}`;
                 context.counter++;
             }
@@ -2308,7 +2452,38 @@
             const statusBadge = node.status && node.status.trim() ? ` **[${node.status}]**` : '';
             md += `${indent}- ${messageText}${statusBadge}\n`;
 
-            if (node.childrenList && node.childrenList.length > 0) {
+            if (isGlobalStateNode) {
+                // Extract current snapshot
+                const curr = extractStateFromGlobalNode(node);
+                const prev = context.lastGS;
+                if (!prev) {
+                    // First snapshot: print full
+                    const keys = Object.keys(curr);
+                    if (keys.length === 0) {
+                        md += `${indent}  - (empty)\n`;
+                    } else {
+                        keys.forEach(k => {
+                            md += `${indent}  - **${k}**: \`${curr[k]}\`\n`;
+                        });
+                    }
+                } else {
+                    // Diff vs previous snapshot
+                    const keys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
+                    let changed = 0;
+                    keys.forEach(k => {
+                        const a = prev[k];
+                        const b = curr[k];
+                        if (a !== b) {
+                            md += `${indent}  - **${k}**: \`${a ?? 'undefined'}\` → \`${b ?? 'undefined'}\` ✨\n`;
+                            changed++;
+                        }
+                    });
+                    if (changed === 0) {
+                        md += `${indent}  - unchanged\n`;
+                    }
+                }
+                context.lastGS = curr;
+            } else if (node.childrenList && node.childrenList.length > 0) {
                 node.childrenList.forEach(child => {
                     md += convertTraceToMarkdown(child, level + 1, context);
                 });
@@ -2317,49 +2492,56 @@
             return md;
         }
 
-        // Compute Global State differences - reference implementation  
-        function calculateGlobalStateDiff(callTrace) {
+        // Compute Global State snapshots (states only)
+        function calculateGlobalStateSnapshots(callTrace) {
             const globalStateNodes = [];
 
             // Collect all Global State nodes
             collectGlobalStateNodes(callTrace, globalStateNodes);
 
             if (globalStateNodes.length === 0) {
-                return {};
+                return [];
             }
 
-            // Extract first and last Global State states
-            const firstState = extractStateFromGlobalNode(globalStateNodes[0]);
-            const lastState = extractStateFromGlobalNode(globalStateNodes[globalStateNodes.length - 1]);
+            // Extract each Global State snapshot
+            const snapshots = [];
+            for (const node of globalStateNodes) {
+                const state = extractStateFromGlobalNode(node);
+                snapshots.push(state);
+            }
+            return snapshots;
+        }
 
-            // Compute differences
-            const diff = {};
+        // Compute Global State snapshots with display labels (e.g., Global State #i)
+        function calculateGlobalStateSnapshotsWithLabels(callTrace) {
+            const globalStateNodes = [];
+            collectGlobalStateNodes(callTrace, globalStateNodes);
+            const snapshots = [];
+            const labels = [];
+            for (let i = 0; i < globalStateNodes.length; i++) {
+                const state = extractStateFromGlobalNode(globalStateNodes[i]);
+                snapshots.push(state);
+                labels.push(`Global State #${i + 1}`);
+            }
+            return { snapshots, labels };
+        }
 
-            // Collect all state keys
-            const allKeys = new Set([...Object.keys(firstState), ...Object.keys(lastState)]);
-
-            allKeys.forEach(key => {
-                const firstValue = firstState[key];
-                const lastValue = lastState[key];
-
-                // Record only if value changes
-                if (firstValue !== lastValue) {
-                    diff[key] = {
-                        from: firstValue || 'undefined',
-                        to: lastValue || 'undefined',
-                        changed: true
-                    };
-                } else if (firstValue && lastValue) {
-                    // Value unchanged but present in both states
-                    diff[key] = {
-                        from: firstValue,
-                        to: lastValue,
-                        changed: false
-                    };
-                }
-            });
-
-            return diff;
+        // For each key, find the first snapshot index where it changes vs previous; return key -> label
+        function calculateFirstChangeLocations(snapshots, labels) {
+            const locMap = Object.create(null);
+            if (!Array.isArray(snapshots) || snapshots.length < 2) return locMap;
+            for (let i = 1; i < snapshots.length; i++) {
+                const prev = snapshots[i - 1];
+                const curr = snapshots[i];
+                const keys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
+                keys.forEach(k => {
+                    if (locMap[k] != null) return;
+                    if (prev[k] !== curr[k]) {
+                        locMap[k] = labels && labels[i] ? labels[i] : `Global State #${i + 1}`;
+                    }
+                });
+            }
+            return locMap;
         }
 
         // Recursively collect all Global State nodes
@@ -2457,7 +2639,7 @@
             return { path, value };
         }
 
-        // Render Global State diff
+        // Render Global State diff (changed entries only)
         function renderGlobalStateDiff(diff) {
             let md = '';
 
@@ -2489,11 +2671,46 @@
                     md += `### ${group.title}\n\n`;
                     group.items.forEach(item => {
                         const { path, change } = item;
-                        if (change.changed) {
-                            md += `- **${path}**: \`${change.from}\` → \`${change.to}\` ✨\n`;
-                        } else {
-                            md += `- **${path}**: \`${change.from}\` (unchanged)\n`;
-                        }
+                        md += `- **${path}**: \`${change.from}\` → \`${change.to}\` ✨\n`;
+                    });
+                    md += `\n`;
+                }
+            });
+
+            return md;
+        }
+
+        // Render Global State final diff with change locations (key -> location label)
+        function renderGlobalStateDiffWithLocation(diff, locations) {
+            let md = '';
+            // Group by path type
+            const groups = {
+                'storage': { title: 'Storage Changes', items: [] },
+                'balance': { title: 'Balance Changes', items: [] },
+                'ghost': { title: 'Ghost Variable Changes', items: [] },
+                'other': { title: 'Other Changes', items: [] }
+            };
+
+            Object.entries(diff).forEach(([path, change]) => {
+                const item = { path, change };
+                if (path.includes('storage') || path.includes('balanceOf') || path.includes('_storage')) {
+                    groups.storage.items.push(item);
+                } else if (path.includes('balance') || path.includes('Balance')) {
+                    groups.balance.items.push(item);
+                } else if (path.includes('ghost') || path.includes('Ghost')) {
+                    groups.ghost.items.push(item);
+                } else {
+                    groups.other.items.push(item);
+                }
+            });
+
+            Object.values(groups).forEach(group => {
+                if (group.items.length > 0) {
+                    md += `### ${group.title}\n\n`;
+                    group.items.forEach(item => {
+                        const { path, change } = item;
+                        const loc = (locations && locations[path]) ? ` (at ${locations[path]})` : '';
+                        md += `- **${path}**: \`${change.from}\` → \`${change.to}\` ✨${loc}\n`;
                     });
                     md += `\n`;
                 }
